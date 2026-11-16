@@ -364,12 +364,32 @@ void VoxelLodTerrain::_on_gi_mode_changed() {
 }
 
 void VoxelLodTerrain::_on_shadow_casting_changed() {
-	const RenderingServer::ShadowCastingSetting mode = RenderingServer::ShadowCastingSetting(get_shadow_casting());
 	for (unsigned int lod_index = 0; lod_index < _update_data->state.lods.size(); ++lod_index) {
+		const RenderingServer::ShadowCastingSetting mode = get_shadow_casting_for_lod(lod_index);
 		_mesh_maps_per_lod[lod_index].for_each_block([mode](VoxelMeshBlockVLT &block) { //
 			block.set_shadow_casting(mode);
 		});
 	}
+}
+
+RenderingServer::ShadowCastingSetting VoxelLodTerrain::get_shadow_casting_for_lod(unsigned int lod_index) const {
+	if (lod_index > _shadow_casting_max_lod) {
+		return RenderingServer::SHADOW_CASTING_SETTING_OFF;
+	}
+	return RenderingServer::ShadowCastingSetting(get_shadow_casting());
+}
+
+void VoxelLodTerrain::set_shadow_casting_max_lod(int max_lod_index) {
+	const uint8_t v = static_cast<uint8_t>(math::clamp(max_lod_index, 0, static_cast<int>(constants::MAX_LOD)));
+	if (v == _shadow_casting_max_lod) {
+		return;
+	}
+	_shadow_casting_max_lod = v;
+	_on_shadow_casting_changed();
+}
+
+int VoxelLodTerrain::get_shadow_casting_max_lod() const {
+	return _shadow_casting_max_lod;
 }
 
 void VoxelLodTerrain::_on_render_layers_mask_changed() {
@@ -2066,7 +2086,7 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 		block->set_mesh(
 				mesh,
 				get_gi_mode(),
-				RenderingServer::ShadowCastingSetting(get_shadow_casting()),
+				get_shadow_casting_for_lod(ob.lod),
 				get_render_layers_mask(),
 				shadow_occluder_mesh,
 				ob.surfaces.collision_surface.submesh_vertex_end,
@@ -2106,7 +2126,7 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 					transition_mesh,
 					dir,
 					get_gi_mode(),
-					RenderingServer::ShadowCastingSetting(get_shadow_casting()),
+					get_shadow_casting_for_lod(ob.lod),
 					get_render_layers_mask()
 			);
 		}
@@ -3949,6 +3969,8 @@ void VoxelLodTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_full_load_mode_enabled"), &Self::set_full_load_mode_enabled);
 	ClassDB::bind_method(D_METHOD("is_full_load_mode_enabled"), &Self::is_full_load_mode_enabled);
 
+	ClassDB::bind_method(D_METHOD("set_shadow_casting_max_lod", "max_lod_index"), &Self::set_shadow_casting_max_lod);
+	ClassDB::bind_method(D_METHOD("get_shadow_casting_max_lod"), &Self::get_shadow_casting_max_lod);
 	ClassDB::bind_method(D_METHOD("set_threaded_update_enabled", "enabled"), &Self::set_threaded_update_enabled);
 	ClassDB::bind_method(D_METHOD("is_threaded_update_enabled"), &Self::is_threaded_update_enabled);
 
@@ -4115,6 +4137,11 @@ void VoxelLodTerrain::_bind_methods() {
 			PropertyInfo(Variant::BOOL, "cache_generated_blocks"),
 			"set_cache_generated_blocks",
 			"get_cache_generated_blocks"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "shadow_casting_max_lod", PROPERTY_HINT_RANGE, "0,32,1"),
+			"set_shadow_casting_max_lod",
+			"get_shadow_casting_max_lod"
 	);
 	ADD_PROPERTY(
 			PropertyInfo(Variant::BOOL, "threaded_update_enabled"),

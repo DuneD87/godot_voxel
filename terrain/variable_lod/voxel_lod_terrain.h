@@ -95,6 +95,12 @@ public:
 	void set_full_load_mode_enabled(bool enabled);
 	bool is_full_load_mode_enabled() const;
 
+	// Mesh blocks of a LOD index higher than this do not cast shadows (their shadow casting setting is OFF).
+	// Far LODs are large blocks that get drawn again in every shadow cascade they touch. Defaults to all LODs
+	// casting shadows.
+	void set_shadow_casting_max_lod(int max_lod_index);
+	int get_shadow_casting_max_lod() const;
+
 	void set_threaded_update_enabled(bool enabled);
 	bool is_threaded_update_enabled() const;
 
@@ -433,6 +439,8 @@ private:
 
 	// Data stored with a shared pointer so it can be sent to asynchronous tasks
 	bool _threaded_update_enabled = false;
+	uint8_t _shadow_casting_max_lod = constants::MAX_LOD;
+	RenderingServer::ShadowCastingSetting get_shadow_casting_for_lod(unsigned int lod_index) const;
 	std::shared_ptr<VoxelData> _data;
 	std::shared_ptr<VoxelLodTerrainUpdateData> _update_data;
 	std::shared_ptr<StreamingDependency> _streaming_dependency;
