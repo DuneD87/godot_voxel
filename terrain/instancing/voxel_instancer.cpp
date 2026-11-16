@@ -645,6 +645,8 @@ void VoxelInstancer::process_collision_distances() {
 	StdVector<Transform3f> transforms;
 
 	bool out_of_time = false;
+	unsigned int destroyed_bodies = 0;
+	const unsigned int max_destroyed_bodies_per_frame = 256;
 
 	while (_collision_distance_time_sliced_block_index < _blocks.size()) {
 		// Iterate a portion of blocks, then check timing budget once after that
@@ -693,8 +695,17 @@ void VoxelInstancer::process_collision_distances() {
 				// Exit distance is slightly higher so it has less chance to oscillate
 				// often when near the threshold
 				if (distance_squared > math::squared(collision_distance * hysteresis)) {
+					destroyed_bodies += block.bodies.size();
 					destroy_multimesh_block_colliders(block);
 					block.distance_colliders_active = false;
+
+					// Freeing nodes is deferred, so it does not show in the time budget, but it is as slow as
+					// creating them (the cost lands at the end of the frame). Spread it over frames too.
+					if (destroyed_bodies >= max_destroyed_bodies_per_frame) {
+						_collision_distance_time_sliced_block_index = portion_begin + rel_block_index + 1;
+						out_of_time = true;
+						break;
+					}
 				}
 			} else {
 				if (distance_squared < math::squared(collision_distance)) {
@@ -1654,11 +1665,15 @@ void VoxelInstancer::update_multimesh_block_from_transforms(
 
 		// Items with colliders read their transforms back later (`get_instance_transforms_local` when colliders are
 		// created by distance, and every removal of an instance).
+		// Items with several mesh LODs need it too: `multimesh_set_mesh` on a multimesh without that copy downloads
+		// the buffer just to recompute its AABB, on every LOD switch of every block.
 		// Without a CPU-side copy, Godot's RD renderer downloads the whole buffer from the graphics card the first
 		// time (`_multimesh_make_local` -> `buffer_get_data`), which stalls the frame for several milliseconds per
 		// block. Touching one instance BEFORE the buffer is set makes Godot allocate that copy without any
 		// download (the buffer is not set yet), and `multimesh_set_buffer` then keeps it up to date.
-		if ((item.get_collision_distance() > 0.f || settings.collision_shapes.size() > 0) && transforms.size() > 0) {
+		if ((item.get_collision_distance() > 0.f || settings.collision_shapes.size() > 0 ||
+			 settings.mesh_lod_count > 1) &&
+			transforms.size() > 0) {
 			RenderingServer::get_singleton()->multimesh_instance_set_transform(multimesh->get_rid(), 0, Transform3D());
 		}
 
