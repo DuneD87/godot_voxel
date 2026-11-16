@@ -644,6 +644,8 @@ void VoxelInstancer::process_collision_distances() {
 	// TODO Candidate for temp allocator
 	StdVector<Transform3f> transforms;
 
+	bool out_of_time = false;
+
 	while (_collision_distance_time_sliced_block_index < _blocks.size()) {
 		// Iterate a portion of blocks, then check timing budget once after that
 		const unsigned int desired_portion_size = 64;
@@ -704,11 +706,20 @@ void VoxelInstancer::process_collision_distances() {
 							block, block_index, item->get_multimesh_settings(), to_span(transforms), block_origin
 					);
 					block.distance_colliders_active = true;
+
+					// Creating colliders is by far the most expensive thing done here (one body node and its shapes
+					// per instance), so the budget is checked after every block that got them. Checking only once
+					// per portion let dozens of blocks (thousands of bodies) through in a single frame.
+					if (Time::get_singleton()->get_ticks_usec() > time_up_time) {
+						_collision_distance_time_sliced_block_index = block_index + 1;
+						out_of_time = true;
+						break;
+					}
 				}
 			}
 		}
 
-		if (Time::get_singleton()->get_ticks_usec() > time_up_time) {
+		if (out_of_time || Time::get_singleton()->get_ticks_usec() > time_up_time) {
 			break;
 		}
 	}
