@@ -1271,6 +1271,7 @@ void VoxelInstancer::destroy_multimesh_block_colliders(Block &block) {
 }
 
 void VoxelInstancer::remove_block(const unsigned int block_index, const bool with_fade_out) {
+	++_instances_revision;
 #ifdef DEBUG_ENABLED
 	CRASH_COND(block_index >= _blocks.size());
 #endif
@@ -1589,6 +1590,7 @@ void VoxelInstancer::update_block_from_transforms(
 		const Transform3D &block_global_transform,
 		const Vector3 block_local_position
 ) {
+	++_instances_revision;
 	ZN_PROFILE_SCOPE();
 
 	// Get or create block
@@ -1650,12 +1652,13 @@ void VoxelInstancer::update_multimesh_block_from_transforms(
 		zylann::godot::DirectMultiMeshInstance::make_transform_3d_bulk_array(transforms, bulk_array);
 		multimesh->set_instance_count(transforms.size());
 
-		// Items with distance-based colliders read their transforms back later (`get_instance_transforms_local`).
+		// Items with colliders read their transforms back later (`get_instance_transforms_local` when colliders are
+		// created by distance, and every removal of an instance).
 		// Without a CPU-side copy, Godot's RD renderer downloads the whole buffer from the graphics card the first
 		// time (`_multimesh_make_local` -> `buffer_get_data`), which stalls the frame for several milliseconds per
 		// block. Touching one instance BEFORE the buffer is set makes Godot allocate that copy without any
 		// download (the buffer is not set yet), and `multimesh_set_buffer` then keeps it up to date.
-		if (item.get_collision_distance() > 0.f && transforms.size() > 0) {
+		if ((item.get_collision_distance() > 0.f || settings.collision_shapes.size() > 0) && transforms.size() > 0) {
 			RenderingServer::get_singleton()->multimesh_instance_set_transform(multimesh->get_rid(), 0, Transform3D());
 		}
 
@@ -2265,6 +2268,7 @@ void VoxelInstancer::remove_instances_by_index(
 		Span<const uint32_t> ascending_indices,
 		const MMRemovalAction mm_removal_action
 ) {
+	++_instances_revision;
 #ifdef DEV_ENABLED
 	for (unsigned int i = 1; i < ascending_indices.size(); ++i) {
 		ZN_ASSERT(ascending_indices[i] > ascending_indices[i - 1]);
@@ -2328,6 +2332,7 @@ void VoxelInstancer::remove_multimesh_instances_by_index(
 		Span<const uint32_t> ascending_indices,
 		const MMRemovalAction removal_action
 ) {
+	++_instances_revision;
 	ZN_PROFILE_SCOPE();
 
 	Ref<MultiMesh> multimesh = block.multimesh_instance.get_multimesh();
@@ -2582,6 +2587,7 @@ void VoxelInstancer::remove_floating_multimesh_instances(
 		const bool bidirectional,
 		const MMRemovalAction removal_action
 ) {
+	++_instances_revision;
 	if (!block.multimesh_instance.is_valid()) {
 		// Empty block
 		return;
@@ -2892,6 +2898,7 @@ void VoxelInstancer::on_body_removed(
 		unsigned int render_block_index,
 		unsigned int instance_index
 ) {
+	++_instances_revision;
 	ZN_PRINT_VERBOSE(format("on_body_removed from block {}", render_block_index));
 
 	Block &block = *_blocks[render_block_index];
@@ -3210,6 +3217,77 @@ bool VoxelInstancer::debug_get_draw_flag(DebugDrawFlag flag_index) const {
 #endif
 }
 
+Array VoxelInstancer::get_instance_transforms_in_sphere(
+		const int item_id,
+		const Vector3 center_global,
+		const float radius
+) const {
+	ZN_PROFILE_SCOPE();
+	Array result;
+
+	auto layer_it = _layers.find(item_id);
+	if (layer_it == _layers.end()) {
+		ZN_PRINT_ERROR("Invalid item id");
+		return result;
+	}
+	ZN_ASSERT_RETURN_V(radius >= 0.f, result);
+	const Layer &layer = layer_it->second;
+
+	const Transform3D gtrans = get_global_transform();
+	const Vector3 center = gtrans.affine_inverse().xform(center_global);
+	const float radius_squared = radius * radius;
+
+	const int block_shift = _parent_mesh_block_size_po2 + layer.lod_index;
+	const Vector3 r(radius, radius, radius);
+	const Vector3i bmin = Vector3i((center - r).floor()) >> block_shift;
+	const Vector3i bmax = Vector3i((center + r).floor()) >> block_shift;
+	// Guard against absurd queries
+	ZN_ASSERT_RETURN_V_MSG(
+			(bmax.x - bmin.x) < 64 && (bmax.y - bmin.y) < 64 && (bmax.z - bmin.z) < 64,
+			result,
+			"Radius too large for the size of blocks of this item"
+	);
+
+	Vector3i bpos;
+	for (bpos.z = bmin.z; bpos.z <= bmax.z; ++bpos.z) {
+		for (bpos.y = bmin.y; bpos.y <= bmax.y; ++bpos.y) {
+			for (bpos.x = bmin.x; bpos.x <= bmax.x; ++bpos.x) {
+				auto block_it = layer.blocks.find(bpos);
+				if (block_it == layer.blocks.end()) {
+					continue;
+				}
+				const Block *block = _blocks[block_it->second].get();
+				ZN_ASSERT_CONTINUE(block != nullptr);
+				if (!block->multimesh_instance.is_valid()) {
+					continue;
+				}
+				Ref<MultiMesh> mm = block->multimesh_instance.get_multimesh();
+				if (mm.is_null()) {
+					continue;
+				}
+				// Instances are stored relative to the origin of their block
+				const Vector3 block_origin = Vector3(bpos << block_shift);
+				const unsigned int count = zylann::godot::get_visible_instance_count(**mm);
+
+				for (unsigned int instance_index = 0; instance_index < count; ++instance_index) {
+					Transform3D t = mm->get_instance_transform(instance_index);
+					t.origin += block_origin;
+					if (t.origin.distance_squared_to(center) > radius_squared) {
+						continue;
+					}
+					result.push_back(gtrans * t);
+				}
+			}
+		}
+	}
+
+	return result;
+}
+
+int VoxelInstancer::get_instances_revision() const {
+	return static_cast<int>(_instances_revision & 0x7fffffff);
+}
+
 Dictionary VoxelInstancer::debug_get_block_infos(const Vector3 world_position, const int item_id) {
 #ifndef TOOLS_ENABLED
 	return Dictionary();
@@ -3376,6 +3454,12 @@ void VoxelInstancer::_bind_methods() {
 			D_METHOD("set_mesh_lod_update_budget_microseconds", "micros"),
 			&VoxelInstancer::set_mesh_lod_update_budget_microseconds
 	);
+
+	ClassDB::bind_method(
+			D_METHOD("get_instance_transforms_in_sphere", "item_id", "center", "radius"),
+			&VoxelInstancer::get_instance_transforms_in_sphere
+	);
+	ClassDB::bind_method(D_METHOD("get_instances_revision"), &VoxelInstancer::get_instances_revision);
 
 	ClassDB::bind_method(
 			D_METHOD("get_collision_update_budget_microseconds"),

@@ -160,6 +160,15 @@ public:
 
 	Dictionary debug_get_block_infos(const Vector3 world_position, const int item_id);
 
+	// Transforms (global space) of the instances of a multimesh item whose origin is within `radius` of
+	// `center` (global space). Lets scripts know where instances are without requiring colliders. Reads are served
+	// from a CPU copy for items having collision shapes or a collision distance; for other items, the first read
+	// of each block downloads its buffer from the graphics card, which is slow.
+	Array get_instance_transforms_in_sphere(const int item_id, const Vector3 center, const float radius) const;
+	// Number that changes every time instances may have been added or removed (blocks loaded, unloaded, or
+	// instances removed from them). Scripts can poll it to know when to query transforms again.
+	int get_instances_revision() const;
+
 	// Editor
 
 #ifdef TOOLS_ENABLED
@@ -462,6 +471,9 @@ private:
 
 	// Each layer corresponds to a library item. Addresses of values in the map are expected to be stable.
 	StdUnorderedMap<int, Layer> _layers;
+
+	// See `get_instances_revision`
+	uint32_t _instances_revision = 0;
 
 	Ref<VoxelInstanceLibrary> _library;
 
