@@ -1639,6 +1639,15 @@ void VoxelInstancer::update_multimesh_block_from_transforms(
 		zylann::godot::DirectMultiMeshInstance::make_transform_3d_bulk_array(transforms, bulk_array);
 		multimesh->set_instance_count(transforms.size());
 
+		// Items with distance-based colliders read their transforms back later (`get_instance_transforms_local`).
+		// Without a CPU-side copy, Godot's RD renderer downloads the whole buffer from the graphics card the first
+		// time (`_multimesh_make_local` -> `buffer_get_data`), which stalls the frame for several milliseconds per
+		// block. Touching one instance BEFORE the buffer is set makes Godot allocate that copy without any
+		// download (the buffer is not set yet), and `multimesh_set_buffer` then keeps it up to date.
+		if (item.get_collision_distance() > 0.f && transforms.size() > 0) {
+			RenderingServer::get_singleton()->multimesh_instance_set_transform(multimesh->get_rid(), 0, Transform3D());
+		}
+
 		// Setting the mesh BEFORE `multimesh_set_buffer` because otherwise Godot computes the AABB inside
 		// `multimesh_set_buffer` BY DOWNLOADING BACK THE BUFFER FROM THE GRAPHICS CARD which can incur a very harsh
 		// performance penalty
