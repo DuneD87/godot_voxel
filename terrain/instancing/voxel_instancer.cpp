@@ -1441,6 +1441,7 @@ void VoxelInstancer::save_all_modified_blocks(
 }
 
 void VoxelInstancer::remove_instances_in_sphere(const Vector3 p_center, const float p_radius) {
+	++_instances_revision;
 	ZN_PROFILE_MESSAGE("RemoveInSphere");
 
 	class RemoveInSphere : public IAreaOperation {
@@ -2283,7 +2284,6 @@ void VoxelInstancer::remove_instances_by_index(
 		Span<const uint32_t> ascending_indices,
 		const MMRemovalAction mm_removal_action
 ) {
-	++_instances_revision;
 #ifdef DEV_ENABLED
 	for (unsigned int i = 1; i < ascending_indices.size(); ++i) {
 		ZN_ASSERT(ascending_indices[i] > ascending_indices[i - 1]);
@@ -2347,7 +2347,6 @@ void VoxelInstancer::remove_multimesh_instances_by_index(
 		Span<const uint32_t> ascending_indices,
 		const MMRemovalAction removal_action
 ) {
-	++_instances_revision;
 	ZN_PROFILE_SCOPE();
 
 	Ref<MultiMesh> multimesh = block.multimesh_instance.get_multimesh();
@@ -2415,12 +2414,14 @@ void VoxelInstancer::remove_multimesh_instances_by_index(
 }
 
 void VoxelInstancer::do_area_operation(const AABB p_aabb, IAreaOperation &op) {
+	++_instances_revision;
 	do_area_operation(
 			Box3i::from_min_max(Vector3i(p_aabb.position.floor()), Vector3i((p_aabb.position + p_aabb.size).ceil())), op
 	);
 }
 
 void VoxelInstancer::do_area_operation(const Box3i p_voxel_box, IAreaOperation &op) {
+	++_instances_revision;
 	ZN_PROFILE_SCOPE();
 	ERR_FAIL_COND(_parent == nullptr);
 	const int render_block_size = 1 << _parent_mesh_block_size_po2;
@@ -2475,12 +2476,14 @@ void VoxelInstancer::do_area_operation(const Box3i p_voxel_box, IAreaOperation &
 }
 
 void VoxelInstancer::on_area_edited(Box3i p_voxel_box) {
+	++_instances_revision;
 	remove_floating_instances(p_voxel_box);
 }
 
 #ifdef VOXEL_INSTANCER_USE_SPECIALIZED_FLOATING_INSTANCE_REMOVAL_IMPLEMENTATION
 
 void VoxelInstancer::remove_floating_instances(const Box3i p_voxel_box) {
+	++_instances_revision;
 	ZN_PROFILE_SCOPE();
 	ZN_PROFILE_MESSAGE("RemoveFloatingInstances");
 
@@ -2602,7 +2605,6 @@ void VoxelInstancer::remove_floating_multimesh_instances(
 		const bool bidirectional,
 		const MMRemovalAction removal_action
 ) {
-	++_instances_revision;
 	if (!block.multimesh_instance.is_valid()) {
 		// Empty block
 		return;
@@ -2784,6 +2786,7 @@ void VoxelInstancer::remove_floating_scene_instances(
 #else // VOXEL_INSTANCER_USE_SPECIALIZED_FLOATING_INSTANCE_REMOVAL_IMPLEMENTATION
 
 void VoxelInstancer::remove_floating_instances(const Box3i voxel_box) {
+	++_instances_revision;
 	ZN_PROFILE_SCOPE();
 	ZN_PROFILE_MESSAGE("RemoveFloatingInstances");
 
