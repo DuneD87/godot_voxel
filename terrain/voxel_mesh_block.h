@@ -5,6 +5,7 @@
 #include "../meshers/voxel_mesher.h"
 #include "../util/containers/fixed_array.h"
 #include "../util/containers/span.h"
+#include "../util/containers/std_vector.h"
 #include "../util/godot/classes/world_3d.h"
 #include "../util/godot/direct_mesh_instance.h"
 #include "../util/godot/direct_static_body.h"
@@ -66,6 +67,10 @@ public:
 	// Collisions
 
 	void set_collision_shape(Ref<Shape3D> shape, bool debug_collision, const Node3D *node, float margin);
+	// Adds one more shape to the block's collision body, keeping the ones already there. Used to build the
+	// collision of a large block in pieces over several frames (each shape's physics BVH is built when added).
+	// No debug drawing for pieces. `set_collision_shape` and `drop_collision` remove them.
+	void add_collision_shape_piece(Ref<Shape3D> shape, const Node3D *node, float margin);
 	bool has_collision_shape() const;
 	void set_collision_layer(int layer);
 	void set_collision_mask(int mask);
@@ -96,9 +101,15 @@ protected:
 	// Must match default value of `active`
 	bool _visible = false;
 	bool _collision_enabled = false;
+	// Shapes added with `add_collision_shape_piece`, kept alive while the body uses them.
+	StdVector<Ref<Shape3D>> _collision_pieces;
 
 	bool _parent_visible = true;
 };
+
+// Splits a concave shape into up to 8 shapes by octant of its triangles' centers, to build them over several
+// frames. Total physics build time is about the same; the largest piece is several times cheaper.
+StdVector<Ref<Shape3D>> split_concave_shape(const ConcavePolygonShape3D &shape);
 
 Ref<ConcavePolygonShape3D> make_collision_shape_from_mesher_output(
 		const VoxelMesher::Output &mesher_output,

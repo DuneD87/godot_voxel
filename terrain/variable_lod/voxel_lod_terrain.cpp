@@ -69,6 +69,16 @@ inline uint64_t get_ticks_msec() {
 	return Time::get_singleton()->get_ticks_msec();
 }
 
+// Adds the elapsed time to a counter when going out of scope (for the cumulative statistics).
+struct ScopedUsecCounter {
+	uint64_t &total;
+	const uint64_t start;
+	ScopedUsecCounter(uint64_t &p_total) : total(p_total), start(Time::get_singleton()->get_ticks_usec()) {}
+	~ScopedUsecCounter() {
+		total += Time::get_singleton()->get_ticks_usec() - start;
+	}
+};
+
 inline void copy_param(ShaderMaterial &src, ShaderMaterial &dst, const StringName &name) {
 	dst.set_shader_parameter(name, src.get_shader_parameter(name));
 }
@@ -1271,10 +1281,11 @@ void VoxelLodTerrain::process(float delta) {
 	// process_block_loading_responses();
 
 	// TODO This could go into time spread tasks too
-	// The budget is in microseconds while this function takes milliseconds: passing it as is gave a timeout of
-	// several seconds, so every pending collision shape was rebuilt in the same frame.
+	// The engine's budget is in microseconds. It used to be passed to a function that took milliseconds, which made
+	// its limit several seconds: every pending collision shape was rebuilt in the same frame.
 	process_deferred_collision_updates(
-			math::max(VoxelEngine::get_singleton().get_main_thread_time_budget_usec() / 1000, 1)
+			_collision_build_budget_usec > 0 ? _collision_build_budget_usec
+											 : VoxelEngine::get_singleton().get_main_thread_time_budget_usec()
 	);
 
 #ifdef TOOLS_ENABLED
@@ -1335,6 +1346,7 @@ void VoxelLodTerrain::process(float delta) {
 
 void VoxelLodTerrain::apply_main_thread_update_tasks() {
 	ZN_PROFILE_SCOPE();
+	ScopedUsecCounter main_tasks_timer(_stats.total_main_tasks_usec);
 	// Dequeue outputs of the threadable part of the update for actions taking place on the main thread
 
 	CRASH_COND(_update_data->task_is_complete == false);
@@ -1418,6 +1430,7 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 			set_mesh_block_visual_active(*block, false, with_fading, lod_index);
 		}
 
+		ScopedUsecCounter collision_toggle_timer(_stats.total_collision_toggle_usec);
 		for (const Vector3i bpos : lod.mesh_blocks_to_activate_collision) {
 			VoxelMeshBlockVLT *block = mesh_map.get_block(bpos);
 			// Can be null if there is actually no surface at this location
@@ -1427,6 +1440,7 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 			block->set_collision_enabled(true);
 		}
 
+		{
 		for (const Vector3i bpos : lod.mesh_blocks_to_deactivate_collision) {
 			VoxelMeshBlockVLT *block = mesh_map.get_block(bpos);
 			// Can be null if there is actually no surface at this location
@@ -1434,6 +1448,7 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 				continue;
 			}
 			block->set_collision_enabled(false);
+		}
 		}
 
 		lod.mesh_blocks_to_activate_visuals.clear();
@@ -1479,6 +1494,8 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 		}
 		lod.mesh_blocks_to_drop_collision.clear();
 
+		ScopedUsecCounter unload_timer(_stats.total_unload_usec);
+		_stats.total_unloaded_blocks += lod.mesh_blocks_to_unload.size();
 		for (unsigned int i = 0; i < lod.mesh_blocks_to_unload.size(); ++i) {
 			const Vector3i bpos = lod.mesh_blocks_to_unload[i];
 
@@ -1569,10 +1586,14 @@ void VoxelLodTerrain::apply_main_thread_update_tasks() {
 				fading_blocks_in_current_lod.erase(fading_block_it);
 			}
 
-			mesh_map.remove_block(bpos, BeforeUnloadMeshAction{ _shader_material_pool });
+			{
+				ScopedUsecCounter remove_timer(_stats.total_block_remove_usec);
+				mesh_map.remove_block(bpos, BeforeUnloadMeshAction{ _shader_material_pool });
+			}
 
 #ifdef VOXEL_ENABLE_INSTANCER
 			if (_instancer != nullptr) {
+				ScopedUsecCounter instancer_timer(_stats.total_instancer_exit_usec);
 				_instancer->on_mesh_block_exit(bpos, lod_index);
 			}
 #endif
@@ -1839,6 +1860,7 @@ inline void set_block_collision_shape(
 		debug_collisions = scene_tree->is_debugging_collisions_hint();
 	}
 
+	block.pending_collision_pieces.clear();
 	block.set_collision_shape(shape, debug_collisions, &terrain, terrain.get_collision_margin());
 
 	block.set_collision_layer(terrain.get_collision_layer());
@@ -1847,7 +1869,18 @@ inline void set_block_collision_shape(
 	block.deferred_collider_data.reset();
 }
 
+namespace {
+uint64_t collision_face_count(const VoxelMesher::Output &output) {
+	const VoxelMesher::Output::CollisionSurface &cs = output.collision_surface;
+	const int64_t indices = cs.submesh_index_end >= 0 ? cs.submesh_index_end : static_cast<int64_t>(cs.indices.size());
+	return static_cast<uint64_t>(indices / 3);
+}
+
+} // namespace
+
 void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
+	ScopedUsecCounter apply_timer(_stats.total_mesh_apply_usec);
+	++_stats.total_meshes_applied;
 	// The following is done on the main thread because Godot doesn't really support everything done here.
 	// Building meshes can be done in the threaded task when using Vulkan, but not OpenGL.
 	// Setting up mesh instances might not be well threaded?
@@ -2144,9 +2177,15 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 	if (has_collision && collision_expected) {
 		const uint64_t now = get_ticks_msec();
 
-		if (_collision_update_delay == 0 ||
-			static_cast<int>(now - block->last_collider_update_time) > _collision_update_delay) {
+		const bool defer = _deferred_collision_min_lod >= 0 && static_cast<int>(ob.lod) >= _deferred_collision_min_lod;
+
+		if (!defer &&
+			(_collision_update_delay == 0 ||
+			 static_cast<int>(now - block->last_collider_update_time) > _collision_update_delay)) {
 			ZN_ASSERT(_mesher.is_valid());
+			ScopedUsecCounter collision_timer(_stats.total_collision_usec);
+			++_stats.total_collision_shapes;
+			_stats.total_collision_faces += collision_face_count(ob.surfaces);
 			Ref<Shape3D> collision_shape = make_collision_shape_from_mesher_output(ob.surfaces, **_mesher);
 			set_block_collision_shape(*this, *block, collision_shape, now);
 			block->set_collision_enabled(collision_active);
@@ -2157,6 +2196,8 @@ void VoxelLodTerrain::apply_mesh_update(VoxelEngine::BlockMeshOutput &ob) {
 				block->deferred_collider_data = make_unique_instance<VoxelMesher::Output>();
 			}
 			*block->deferred_collider_data = std::move(ob.surfaces);
+			// The shape added later keeps this state (VoxelMeshBlock::set_collision_shape).
+			block->set_collision_enabled(collision_active);
 		}
 	}
 
@@ -2370,47 +2411,83 @@ void VoxelLodTerrain::apply_detail_texture_update_to_block(
 
 #endif
 
-void VoxelLodTerrain::process_deferred_collision_updates(uint32_t timeout_msec) {
+void VoxelLodTerrain::process_deferred_collision_updates(uint32_t budget_usec) {
 	ZN_PROFILE_SCOPE();
 
 	const unsigned int lod_count = get_lod_count();
 	// TODO We may move this in a time spread task somehow, the timeout does not account for them so could take longer
-	const uint64_t then = get_ticks_msec();
+	const uint64_t then_usec = Time::get_singleton()->get_ticks_usec();
+	bool did_work = false;
+	// We always process at least one shape, then we check the budget
+	auto out_of_budget = [&did_work, then_usec, budget_usec]() {
+		return did_work && Time::get_singleton()->get_ticks_usec() - then_usec >= budget_usec;
+	};
 
 	for (unsigned int lod_index = 0; lod_index < lod_count; ++lod_index) {
 		VoxelMeshMap<VoxelMeshBlockVLT> &mesh_map = _mesh_maps_per_lod[lod_index];
 		StdVector<Vector3i> &deferred_collision_updates = _deferred_collision_updates_per_lod[lod_index];
+		const bool split_new = _deferred_collision_min_lod >= 0 && static_cast<int>(lod_index) >= _deferred_collision_min_lod;
 
 		for (unsigned int i = 0; i < deferred_collision_updates.size(); ++i) {
 			const Vector3i block_pos = deferred_collision_updates[i];
 			VoxelMeshBlockVLT *block = mesh_map.get_block(block_pos);
 
-			if (block == nullptr || block->deferred_collider_data == nullptr) {
+			if (block == nullptr ||
+				(block->deferred_collider_data == nullptr && block->pending_collision_pieces.empty())) {
 				// Block was unloaded or no longer needs a collision update
 				unordered_remove(deferred_collision_updates, i);
 				--i;
 				continue;
 			}
 
+			if (out_of_budget()) {
+				return;
+			}
+
 			const uint64_t now = get_ticks_msec();
 
-			if (static_cast<int>(now - block->last_collider_update_time) > _collision_update_delay) {
-				Ref<Shape3D> collision_shape;
+			if (block->deferred_collider_data != nullptr) {
+				if (static_cast<int>(now - block->last_collider_update_time) <= _collision_update_delay) {
+					continue;
+				}
+				ScopedUsecCounter collision_timer(_stats.total_collision_usec);
+				++_stats.total_collision_shapes;
+				_stats.total_collision_faces += collision_face_count(*block->deferred_collider_data);
+				Ref<ConcavePolygonShape3D> collision_shape;
 				if (_mesher.is_valid()) {
 					collision_shape =
 							make_collision_shape_from_mesher_output(*block->deferred_collider_data, **_mesher);
 				}
+				did_work = true;
 
-				set_block_collision_shape(*this, *block, collision_shape, now);
-
-				unordered_remove(deferred_collision_updates, i);
-				--i;
+				// A block's first collision is added in pieces, one or a few per frame. A block that already has
+				// collision (an edit, a remesh) gets its new shape whole, never leaving it with a partial floor.
+				if (split_new && collision_shape.is_valid() && !block->has_collision_shape()) {
+					block->pending_collision_pieces = split_concave_shape(**collision_shape);
+					block->deferred_collider_data.reset();
+					block->last_collider_update_time = now;
+				} else {
+					set_block_collision_shape(*this, *block, collision_shape, now);
+					unordered_remove(deferred_collision_updates, i);
+					--i;
+					continue;
+				}
 			}
 
-			// We always process at least one, then we check the timeout
-			if (get_ticks_msec() - then >= timeout_msec) {
-				return;
+			while (!block->pending_collision_pieces.empty()) {
+				if (out_of_budget()) {
+					return;
+				}
+				ScopedUsecCounter collision_timer(_stats.total_collision_usec);
+				Ref<Shape3D> piece = block->pending_collision_pieces.back();
+				block->pending_collision_pieces.pop_back();
+				block->add_collision_shape_piece(piece, this, get_collision_margin());
+				block->set_collision_layer(get_collision_layer());
+				block->set_collision_mask(get_collision_mask());
+				did_work = true;
 			}
+			unordered_remove(deferred_collision_updates, i);
+			--i;
 		}
 	}
 }
@@ -2682,6 +2759,18 @@ Dictionary VoxelLodTerrain::_b_get_statistics() const {
 	d["dropped_block_loads"] = _stats.dropped_block_loads;
 	d["dropped_block_meshs"] = _stats.dropped_block_meshs;
 
+	d["total_meshes_applied"] = static_cast<int64_t>(_stats.total_meshes_applied);
+	d["total_mesh_apply_usec"] = static_cast<int64_t>(_stats.total_mesh_apply_usec);
+	d["total_collision_shapes"] = static_cast<int64_t>(_stats.total_collision_shapes);
+	d["total_collision_faces"] = static_cast<int64_t>(_stats.total_collision_faces);
+	d["total_collision_usec"] = static_cast<int64_t>(_stats.total_collision_usec);
+	d["total_main_tasks_usec"] = static_cast<int64_t>(_stats.total_main_tasks_usec);
+	d["total_collision_toggle_usec"] = static_cast<int64_t>(_stats.total_collision_toggle_usec);
+	d["total_unload_usec"] = static_cast<int64_t>(_stats.total_unload_usec);
+	d["total_unloaded_blocks"] = static_cast<int64_t>(_stats.total_unloaded_blocks);
+	d["total_block_remove_usec"] = static_cast<int64_t>(_stats.total_block_remove_usec);
+	d["total_instancer_exit_usec"] = static_cast<int64_t>(_stats.total_instancer_exit_usec);
+
 	return d;
 }
 
@@ -2790,6 +2879,22 @@ void VoxelLodTerrain::set_collision_update_delay(int delay_msec) {
 
 int VoxelLodTerrain::get_collision_update_delay() const {
 	return _collision_update_delay;
+}
+
+void VoxelLodTerrain::set_deferred_collision_min_lod(int lod_index) {
+	_deferred_collision_min_lod = math::clamp(lod_index, -1, static_cast<int>(constants::MAX_LOD));
+}
+
+int VoxelLodTerrain::get_deferred_collision_min_lod() const {
+	return _deferred_collision_min_lod;
+}
+
+void VoxelLodTerrain::set_collision_build_budget_usec(int usec) {
+	_collision_build_budget_usec = math::max(usec, 0);
+}
+
+int VoxelLodTerrain::get_collision_build_budget_usec() const {
+	return _collision_build_budget_usec;
 }
 
 void VoxelLodTerrain::set_lod_fade_duration(float seconds) {
@@ -3882,6 +3987,12 @@ void VoxelLodTerrain::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_collision_margin", "margin"), &Self::set_collision_margin);
 
 	ClassDB::bind_method(D_METHOD("get_collision_update_delay"), &Self::get_collision_update_delay);
+	ClassDB::bind_method(
+			D_METHOD("set_deferred_collision_min_lod", "lod_index"), &Self::set_deferred_collision_min_lod
+	);
+	ClassDB::bind_method(D_METHOD("get_deferred_collision_min_lod"), &Self::get_deferred_collision_min_lod);
+	ClassDB::bind_method(D_METHOD("set_collision_build_budget_usec", "usec"), &Self::set_collision_build_budget_usec);
+	ClassDB::bind_method(D_METHOD("get_collision_build_budget_usec"), &Self::get_collision_build_budget_usec);
 	ClassDB::bind_method(D_METHOD("set_collision_update_delay", "delay_msec"), &Self::set_collision_update_delay);
 
 	// LOD
@@ -4120,6 +4231,16 @@ void VoxelLodTerrain::_bind_methods() {
 			PropertyInfo(Variant::INT, "collision_update_delay"),
 			"set_collision_update_delay",
 			"get_collision_update_delay"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "deferred_collision_min_lod", PROPERTY_HINT_RANGE, "-1,24,1"),
+			"set_deferred_collision_min_lod",
+			"get_deferred_collision_min_lod"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "collision_build_budget_usec", PROPERTY_HINT_RANGE, "0,100000,1"),
+			"set_collision_build_budget_usec",
+			"get_collision_build_budget_usec"
 	);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collision_margin"), "set_collision_margin", "get_collision_margin");
 

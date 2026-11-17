@@ -3,9 +3,12 @@
 #include "../util/godot/classes/collision_shape_3d.h"
 #include "../util/godot/classes/concave_polygon_shape_3d.h"
 #include "../util/godot/classes/node_3d.h"
+#include "../util/godot/classes/physics_server_3d.h"
 #include "../util/macros.h"
 #include "../util/profiling.h"
 #include "free_mesh_task.h"
+
+#include <array>
 
 namespace zylann::voxel {
 
@@ -153,11 +156,20 @@ void VoxelMeshBlock::set_collision_shape(Ref<Shape3D> shape, bool debug_collisio
 		return;
 	}
 
+	if (!_collision_pieces.empty()) {
+		// Made of pieces: start over with a single shape.
+		_static_body.destroy();
+		_collision_pieces.clear();
+	}
+
 	if (!_static_body.is_valid()) {
 		_static_body.create();
 		_static_body.set_world(*_world);
 		// This allows collision signals to provide the terrain node in the `collider` field
 		_static_body.set_attached_object(node);
+		// The body may be created frames after the mesh (deferred collision): place it, set_parent_transform only
+		// reaches bodies that already exist.
+		_static_body.set_transform(node->get_global_transform() * Transform3D(Basis(), _position_in_voxels));
 
 	} else {
 		_static_body.remove_shape(0);
@@ -199,6 +211,72 @@ void VoxelMeshBlock::drop_collision() {
 	if (_static_body.is_valid()) {
 		_static_body.destroy();
 	}
+	_collision_pieces.clear();
+}
+
+void VoxelMeshBlock::add_collision_shape_piece(Ref<Shape3D> shape, const Node3D *node, float margin) {
+	ERR_FAIL_COND(node == nullptr);
+	ERR_FAIL_COND(shape.is_null());
+	ERR_FAIL_COND_MSG(node->get_world_3d() != _world, "Physics body and attached node must be from the same world");
+
+	if (!_static_body.is_valid()) {
+		_static_body.create();
+		_static_body.set_world(*_world);
+		_static_body.set_attached_object(node);
+		_static_body.set_transform(node->get_global_transform() * Transform3D(Basis(), _position_in_voxels));
+	}
+
+	shape->set_margin(margin);
+	PhysicsServer3D::get_singleton()->body_add_shape(
+			_static_body.get_rid(), shape->get_rid(), Transform3D(), !_collision_enabled
+	);
+	_collision_pieces.push_back(shape);
+}
+
+StdVector<Ref<Shape3D>> split_concave_shape(const ConcavePolygonShape3D &shape) {
+	StdVector<Ref<Shape3D>> pieces;
+	const PackedVector3Array faces = shape.get_faces();
+	const int count = faces.size();
+	if (count < 3) {
+		return pieces;
+	}
+	const Vector3 *r = faces.ptr();
+	AABB box(r[0], Vector3());
+	for (int i = 1; i < count; ++i) {
+		box.expand_to(r[i]);
+	}
+	const Vector3 center = box.get_center();
+
+	std::array<PackedVector3Array, 8> parts;
+	for (PackedVector3Array &part : parts) {
+		part.resize(count);
+	}
+	std::array<int, 8> sizes = { 0, 0, 0, 0, 0, 0, 0, 0 };
+	std::array<Vector3 *, 8> writers;
+	for (unsigned int k = 0; k < 8; ++k) {
+		writers[k] = parts[k].ptrw();
+	}
+	for (int i = 0; i + 2 < count; i += 3) {
+		const Vector3 c = (r[i] + r[i + 1] + r[i + 2]) / 3.f;
+		const unsigned int k = (c.x > center.x ? 1 : 0) | (c.y > center.y ? 2 : 0) | (c.z > center.z ? 4 : 0);
+		Vector3 *w = writers[k] + sizes[k];
+		w[0] = r[i];
+		w[1] = r[i + 1];
+		w[2] = r[i + 2];
+		sizes[k] += 3;
+	}
+	for (unsigned int k = 0; k < 8; ++k) {
+		if (sizes[k] == 0) {
+			continue;
+		}
+		parts[k].resize(sizes[k]);
+		Ref<ConcavePolygonShape3D> piece;
+		piece.instantiate();
+		piece->set_backface_collision_enabled(shape.is_backface_collision_enabled());
+		piece->set_faces(parts[k]);
+		pieces.push_back(piece);
+	}
+	return pieces;
 }
 
 void VoxelMeshBlock::set_collision_enabled(bool enable) {
@@ -206,7 +284,10 @@ void VoxelMeshBlock::set_collision_enabled(bool enable) {
 		return;
 	}
 	if (_static_body.is_valid()) {
-		_static_body.set_shape_enabled(0, enable);
+		const int shape_count = PhysicsServer3D::get_singleton()->body_get_shape_count(_static_body.get_rid());
+		for (int i = 0; i < shape_count; ++i) {
+			_static_body.set_shape_enabled(i, enable);
+		}
 	}
 	_collision_enabled = enable;
 }

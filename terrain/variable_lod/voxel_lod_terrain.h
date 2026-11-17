@@ -161,6 +161,18 @@ public:
 	void set_collision_update_delay(int delay_msec);
 	int get_collision_update_delay() const;
 
+	// Mesh blocks of this LOD index or higher get their first collision shape through the deferred queue, built
+	// within `collision_build_budget_usec` per frame, instead of in the frame their mesh arrives. Building a
+	// collision shape (and its physics BVH) takes ~0.8 us per triangle on the main thread, and when moving, dozens
+	// of blocks arrive within a few frames. -1 (default) builds every block right away.
+	void set_deferred_collision_min_lod(int lod_index);
+	int get_deferred_collision_min_lod() const;
+
+	// Time budget per frame for the deferred collision queue, in microseconds. At least one shape is built per
+	// frame. 0 (default) uses the voxel engine's main thread budget.
+	void set_collision_build_budget_usec(int usec);
+	int get_collision_build_budget_usec() const;
+
 	void set_lod_fade_duration(float seconds);
 	float get_lod_fade_duration() const;
 
@@ -198,6 +210,21 @@ public:
 		// Total time spent in the last update task, in microseconds.
 		// This only includes the threadable part, not the whole `process` function.
 		uint32_t time_update_task = 0;
+		// Cumulative counters (never reset), for profiling scripts that diff them per frame.
+		// Mesh blocks applied on the main thread, and time spent applying them (microseconds).
+		uint64_t total_meshes_applied = 0;
+		uint64_t total_mesh_apply_usec = 0;
+		// Collision shapes built and assigned on the main thread, their triangles, and the time spent.
+		uint64_t total_collision_shapes = 0;
+		uint64_t total_collision_faces = 0;
+		uint64_t total_collision_usec = 0;
+		// Main thread application of the update task results, and parts of it.
+		uint64_t total_main_tasks_usec = 0;
+		uint64_t total_collision_toggle_usec = 0;
+		uint64_t total_unload_usec = 0;
+		uint64_t total_unloaded_blocks = 0;
+		uint64_t total_block_remove_usec = 0;
+		uint64_t total_instancer_exit_usec = 0;
 	};
 
 	const Stats &get_stats() const;
@@ -343,7 +370,7 @@ private:
 
 	void save_all_modified_blocks(bool with_copy, std::shared_ptr<AsyncDependencyTracker> tracker);
 
-	void process_deferred_collision_updates(uint32_t timeout_msec);
+	void process_deferred_collision_updates(uint32_t budget_usec);
 	void process_fading_blocks(float delta);
 
 	struct LocalCameraInfo {
@@ -415,6 +442,8 @@ private:
 	unsigned int _collision_mask = 1;
 	float _collision_margin = constants::DEFAULT_COLLISION_MARGIN;
 	int _collision_update_delay = 0;
+	int _deferred_collision_min_lod = -1;
+	int _collision_build_budget_usec = 0;
 	FixedArray<StdVector<Vector3i>, constants::MAX_LOD> _deferred_collision_updates_per_lod;
 
 	float _lod_fade_duration = 0.f;

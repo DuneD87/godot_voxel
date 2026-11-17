@@ -38,6 +38,8 @@ public:
 
 	uint64_t last_collider_update_time = 0;
 	UniquePtr<VoxelMesher::Output> deferred_collider_data;
+	// Pieces of the block's first collision shape still to be added (see VoxelLodTerrain deferred collisions).
+	StdVector<Ref<Shape3D>> pending_collision_pieces;
 
 	int32_t col_vertex_end = -1;
 	int32_t col_index_end = -1;

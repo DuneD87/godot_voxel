@@ -19,6 +19,9 @@ public:
 	void create();
 	void destroy();
 	bool is_valid() const;
+	inline RID get_rid() const {
+		return _body;
+	}
 	void set_transform(Transform3D transform);
 	void add_shape(Ref<Shape3D> shape);
 	void remove_shape(int shape_index);
