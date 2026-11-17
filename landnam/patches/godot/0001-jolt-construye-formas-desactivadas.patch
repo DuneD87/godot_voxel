@@ -1,0 +1,41 @@
+From dca45417f4ab26eb56c1f2e56f27f1ba1029e9e7 Mon Sep 17 00:00:00 2001
+From: duned <duned87@gmail.com>
+Date: Tue, 17 Nov 2026 20:23:33 +0100
+Subject: [PATCH] =?UTF-8?q?FIX:=20Jolt=20construye=20tambi=C3=A9n=20las=20?=
+ =?UTF-8?q?formas=20desactivadas=20al=20a=C3=B1adirlas?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Solo se construían las activas: una forma grande añadida desactivada (un bloque de terreno de vóxeles que aún no es el LOD activo) se construía entera al activarse, junto con todos los bloques que cambian de LOD en el mismo fotograma (picos de 18-42 ms medidos). La forma guarda su construcción, así que activarla después es barato.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../jolt_physics/objects/jolt_shaped_object_3d.cpp    | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/modules/jolt_physics/objects/jolt_shaped_object_3d.cpp b/modules/jolt_physics/objects/jolt_shaped_object_3d.cpp
+index 1e42dff..fe86718 100644
+--- a/modules/jolt_physics/objects/jolt_shaped_object_3d.cpp
++++ b/modules/jolt_physics/objects/jolt_shaped_object_3d.cpp
+@@ -49,8 +49,15 @@ JPH::ShapeRefC JoltShapedObject3D::_try_build_shape(bool p_optimize_compound) {
+ 	int built_shapes = 0;
+ 
+ 	for (JoltShapeInstance3D &shape : shapes) {
+-		if (shape.is_enabled() && shape.try_build()) {
+-			built_shapes += 1;
++		if (shape.is_enabled()) {
++			if (shape.try_build()) {
++				built_shapes += 1;
++			}
++		} else if (shape.get_shape() != nullptr) {
++			// Build disabled shapes too (it is cached in the shape): otherwise a large shape added disabled, like a
++			// voxel terrain block that is not the active LOD yet, gets built all at once whenever it is enabled,
++			// together with every other block switching LOD in the same frame.
++			shape.get_shape()->try_build();
+ 		}
+ 	}
+ 
+-- 
+2.53.0
+
