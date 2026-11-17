@@ -83,6 +83,7 @@ void VoxelInstancer::clear_blocks() {
 		}
 	}
 	_blocks.clear();
+	_pending_block_exits.clear();
 	for (auto it = _layers.begin(); it != _layers.end(); ++it) {
 		Layer &layer = it->second;
 		layer.blocks.clear();
@@ -211,17 +212,32 @@ void VoxelInstancer::_notification(int p_what) {
 	}
 }
 
+namespace {
+uint64_t ticks_usec() {
+	return Time::get_singleton()->get_ticks_usec();
+}
+} // namespace
+
 void VoxelInstancer::process() {
 	ZN_PROFILE_SCOPE();
 
+	uint64_t t = ticks_usec();
 	process_task_results();
+	_stats_usec[STAT_TASK_RESULTS] += ticks_usec() - t;
 
 	if (_parent != nullptr) {
 		if (_library.is_valid()) {
 			if (_mesh_lod_distances[0] > 0.f) {
+				t = ticks_usec();
 				process_mesh_lods();
+				_stats_usec[STAT_MESH_LODS] += ticks_usec() - t;
 			}
+			t = ticks_usec();
 			process_collision_distances();
+			_stats_usec[STAT_COLLISION_DISTANCES] += ticks_usec() - t;
+			t = ticks_usec();
+			process_pending_block_exits();
+			_stats_usec[STAT_BLOCK_EXITS] += ticks_usec() - t;
 		}
 
 #ifdef TOOLS_ENABLED
@@ -231,7 +247,23 @@ void VoxelInstancer::process() {
 #endif
 	}
 
+	t = ticks_usec();
 	process_fading();
+	_stats_usec[STAT_FADING] += ticks_usec() - t;
+}
+
+Dictionary VoxelInstancer::get_statistics() const {
+	Dictionary d;
+	d["total_task_results_usec"] = static_cast<int64_t>(_stats_usec[STAT_TASK_RESULTS]);
+	d["total_mesh_lods_usec"] = static_cast<int64_t>(_stats_usec[STAT_MESH_LODS]);
+	d["total_collision_distances_usec"] = static_cast<int64_t>(_stats_usec[STAT_COLLISION_DISTANCES]);
+	d["total_block_exits_usec"] = static_cast<int64_t>(_stats_usec[STAT_BLOCK_EXITS]);
+	d["total_fading_usec"] = static_cast<int64_t>(_stats_usec[STAT_FADING]);
+	d["pending_block_exits"] = static_cast<int64_t>(_pending_block_exits.size());
+	d["total_block_exits_done"] = static_cast<int64_t>(_block_exits_done);
+	d["total_block_exits_flushed"] = static_cast<int64_t>(_block_exits_flushed);
+	d["blocks"] = static_cast<int64_t>(_blocks.size());
+	return d;
 }
 
 void VoxelInstancer::process_task_results() {
@@ -1353,6 +1385,7 @@ void VoxelInstancer::on_mesh_block_enter(
 	if (lod_index >= _lods.size()) {
 		return;
 	}
+	flush_pending_block_exit(render_grid_position, lod_index);
 	create_render_blocks(render_grid_position, lod_index, surface_arrays, vertex_range_end, index_range_end);
 }
 
@@ -1400,6 +1433,18 @@ void VoxelInstancer::on_mesh_block_exit(const Vector3i render_grid_position, con
 	scheduler.flush();
 
 	// Remove render blocks
+	if (_block_exit_budget_microseconds > 0) {
+		_pending_block_exits.push_back(PendingBlockExit{ render_grid_position, lod_index });
+	} else {
+		remove_render_blocks_of_exit(render_grid_position, lod_index);
+	}
+}
+
+void VoxelInstancer::remove_render_blocks_of_exit(const Vector3i render_grid_position, const unsigned int lod_index) {
+	if (lod_index >= _lods.size()) {
+		return;
+	}
+	Lod &lod = _lods[lod_index];
 	for (auto layer_it = lod.layers.begin(); layer_it != lod.layers.end(); ++layer_it) {
 		const int layer_id = *layer_it;
 
@@ -1409,6 +1454,53 @@ void VoxelInstancer::on_mesh_block_exit(const Vector3i render_grid_position, con
 		if (block_it != layer.blocks.end()) {
 			remove_block(block_it->second, _fading_enabled);
 		}
+	}
+}
+
+void VoxelInstancer::process_pending_block_exits() {
+	if (_pending_block_exits.empty()) {
+		return;
+	}
+	ZN_PROFILE_SCOPE();
+	const uint64_t end_usec = Time::get_singleton()->get_ticks_usec() + _block_exit_budget_microseconds;
+	// Oldest first. At least one per frame.
+	unsigned int done = 0;
+	while (done < _pending_block_exits.size()) {
+		const PendingBlockExit &e = _pending_block_exits[done];
+		remove_render_blocks_of_exit(e.render_grid_position, e.lod_index);
+		++done;
+		if (Time::get_singleton()->get_ticks_usec() >= end_usec) {
+			break;
+		}
+	}
+	_pending_block_exits.erase(_pending_block_exits.begin(), _pending_block_exits.begin() + done);
+	_block_exits_done += done;
+}
+
+// A block entering again where its exit is still pending: the exit happens first, as it would have without a budget.
+void VoxelInstancer::flush_pending_block_exit(const Vector3i render_grid_position, const unsigned int lod_index) {
+	for (unsigned int i = 0; i < _pending_block_exits.size(); ++i) {
+		const PendingBlockExit &e = _pending_block_exits[i];
+		if (e.render_grid_position == render_grid_position && e.lod_index == lod_index) {
+			++_block_exits_flushed;
+			_pending_block_exits.erase(_pending_block_exits.begin() + i);
+			remove_render_blocks_of_exit(render_grid_position, lod_index);
+			return;
+		}
+	}
+}
+
+int VoxelInstancer::get_block_exit_budget_microseconds() const {
+	return _block_exit_budget_microseconds;
+}
+
+void VoxelInstancer::set_block_exit_budget_microseconds(const int p_micros) {
+	_block_exit_budget_microseconds = math::max(p_micros, 0);
+	if (_block_exit_budget_microseconds == 0) {
+		for (const PendingBlockExit &e : _pending_block_exits) {
+			remove_render_blocks_of_exit(e.render_grid_position, e.lod_index);
+		}
+		_pending_block_exits.clear();
 	}
 }
 
@@ -3479,6 +3571,14 @@ void VoxelInstancer::_bind_methods() {
 	);
 	ClassDB::bind_method(D_METHOD("get_instances_revision"), &VoxelInstancer::get_instances_revision);
 
+	ClassDB::bind_method(D_METHOD("get_statistics"), &VoxelInstancer::get_statistics);
+	ClassDB::bind_method(
+			D_METHOD("get_block_exit_budget_microseconds"), &VoxelInstancer::get_block_exit_budget_microseconds
+	);
+	ClassDB::bind_method(
+			D_METHOD("set_block_exit_budget_microseconds", "micros"),
+			&VoxelInstancer::set_block_exit_budget_microseconds
+	);
 	ClassDB::bind_method(
 			D_METHOD("get_collision_update_budget_microseconds"),
 			&VoxelInstancer::get_collision_update_budget_microseconds
@@ -3515,6 +3615,11 @@ void VoxelInstancer::_bind_methods() {
 			PropertyInfo(Variant::INT, "collision_update_budget_microseconds"),
 			"set_collision_update_budget_microseconds",
 			"get_collision_update_budget_microseconds"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::INT, "block_exit_budget_microseconds"),
+			"set_block_exit_budget_microseconds",
+			"get_block_exit_budget_microseconds"
 	);
 
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "fading_enabled"), "set_fading_enabled", "get_fading_enabled");

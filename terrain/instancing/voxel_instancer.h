@@ -85,6 +85,15 @@ public:
 	int get_collision_update_budget_microseconds() const;
 	void set_collision_update_budget_microseconds(const int p_micros);
 
+	// Time per frame for removing the blocks of terrain mesh blocks that went away. When moving, the terrain unloads
+	// dozens to hundreds of blocks at once, and each one removes a block in every layer of the instancer. 0
+	// (default) removes them right away.
+	// Cumulative microseconds spent in each part of `process` (never reset), and queue sizes. For profiling.
+	Dictionary get_statistics() const;
+
+	int get_block_exit_budget_microseconds() const;
+	void set_block_exit_budget_microseconds(const int p_micros);
+
 	void set_fading_enabled(const bool enabled);
 	bool get_fading_enabled() const;
 
@@ -488,6 +497,20 @@ private:
 
 	unsigned int _collision_distance_time_sliced_block_index = 0;
 	uint32_t _collision_distance_update_budget_microseconds = 500;
+	uint32_t _block_exit_budget_microseconds = 0;
+	enum StatIndex { STAT_TASK_RESULTS, STAT_MESH_LODS, STAT_COLLISION_DISTANCES, STAT_BLOCK_EXITS, STAT_FADING, STAT_COUNT };
+	uint64_t _stats_usec[STAT_COUNT] = {};
+	uint64_t _block_exits_done = 0;
+	uint64_t _block_exits_flushed = 0;
+	// Terrain mesh blocks that exited and whose instancer blocks are not removed yet (see block_exit_budget).
+	struct PendingBlockExit {
+		Vector3i render_grid_position;
+		unsigned int lod_index;
+	};
+	StdVector<PendingBlockExit> _pending_block_exits;
+	void remove_render_blocks_of_exit(const Vector3i render_grid_position, const unsigned int lod_index);
+	void process_pending_block_exits();
+	void flush_pending_block_exit(const Vector3i render_grid_position, const unsigned int lod_index);
 
 	std::shared_ptr<InstancerTaskOutputQueue> _loading_results;
 
