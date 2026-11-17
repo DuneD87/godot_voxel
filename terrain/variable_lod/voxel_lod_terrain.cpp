@@ -1271,7 +1271,11 @@ void VoxelLodTerrain::process(float delta) {
 	// process_block_loading_responses();
 
 	// TODO This could go into time spread tasks too
-	process_deferred_collision_updates(VoxelEngine::get_singleton().get_main_thread_time_budget_usec());
+	// The budget is in microseconds while this function takes milliseconds: passing it as is gave a timeout of
+	// several seconds, so every pending collision shape was rebuilt in the same frame.
+	process_deferred_collision_updates(
+			math::max(VoxelEngine::get_singleton().get_main_thread_time_budget_usec() / 1000, 1)
+	);
 
 #ifdef TOOLS_ENABLED
 	if (debug_is_draw_enabled() && is_visible_in_tree()) {
