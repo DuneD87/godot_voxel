@@ -164,6 +164,8 @@ private:
 	Vector2 _b_debug_analyze_range(Vector3 min_pos, Vector3 max_pos) const;
 	Dictionary _b_compile();
 	float _b_debug_measure_microseconds_per_voxel(bool singular);
+	Dictionary _b_debug_profile_block(Vector3i origin, int lod, int size, bool optimized);
+	Dictionary _b_compile_debug();
 #ifdef TOOLS_ENABLED
 	// This exists because some custom editors will edit an internal object instead of the resource itself
 	// (here the "main function" object). And because Godot determines wether or not a resource should be saved based on

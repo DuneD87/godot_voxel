@@ -2477,6 +2477,88 @@ float VoxelGeneratorGraph::_b_debug_measure_microseconds_per_voxel(bool singular
 	return debug_measure_microseconds_per_voxel(singular, nullptr);
 }
 
+// Coste por nodo de la función principal al generar un bloque real (los nodos de las subfunciones se
+// atribuyen al nodo Function que las contiene). Con 'optimized', como generate_block: análisis de
+// rangos sobre el bloque y mapa de ejecución podado. Necesita el grafo compilado con compile_debug().
+// Los tiempos por nodo se truncan a microsegundos enteros por operación.
+Dictionary VoxelGeneratorGraph::_b_debug_profile_block(Vector3i origin, int lod, int size, bool optimized) {
+	std::shared_ptr<const Runtime> runtime_ptr;
+	{
+		RWLockRead rlock(_runtime_lock);
+		runtime_ptr = _runtime;
+	}
+	ERR_FAIL_COND_V_MSG(runtime_ptr == nullptr, Dictionary(), "The graph hasn't been compiled yet");
+	ERR_FAIL_COND_V(size <= 0 || size > 64 || lod < 0 || lod > 20, Dictionary());
+	const pg::Runtime &runtime = runtime_ptr->runtime;
+	Cache &cache = get_tls_cache();
+
+	const int step = 1 << lod;
+	const uint32_t n = size * size * size;
+	StdVector<float> xs;
+	StdVector<float> ys;
+	StdVector<float> zs;
+	StdVector<float> sdf;
+	xs.resize(n);
+	ys.resize(n);
+	zs.resize(n);
+	sdf.resize(n, 0.f);
+	uint32_t i = 0;
+	for (int z = 0; z < size; ++z) {
+		for (int y = 0; y < size; ++y) {
+			for (int x = 0; x < size; ++x) {
+				xs[i] = origin.x + x * step;
+				ys[i] = origin.y + y * step;
+				zs[i] = origin.z + z * step;
+				++i;
+			}
+		}
+	}
+
+	runtime.prepare_state(cache.state, n, true);
+	const pg::Runtime::ExecutionMap *map = nullptr;
+	if (optimized) {
+		const int span = (size - 1) * step;
+		QueryInputs<math::Interval> range_inputs(
+				*runtime_ptr,
+				math::Interval(origin.x, origin.x + span),
+				math::Interval(origin.y, origin.y + span),
+				math::Interval(origin.z, origin.z + span),
+				math::Interval()
+		);
+		runtime.analyze_range(cache.state, range_inputs.get());
+		runtime.generate_optimized_execution_map(cache.state, cache.optimized_execution_map, true);
+		map = &cache.optimized_execution_map;
+	}
+
+	QueryInputs<Span<const float>> inputs(*runtime_ptr, to_span(xs), to_span(ys), to_span(zs), to_span(sdf));
+	ProfilingClock clock;
+	runtime.generate_set(cache.state, inputs.get(), false, map);
+	const uint64_t total_us = clock.restart();
+
+	const pg::Runtime::ExecutionMap &em = map != nullptr ? *map : runtime.get_default_execution_map();
+	Dictionary nodes;
+	for (unsigned int k = 0; k < em.debug_nodes.size(); ++k) {
+		const uint32_t id = em.debug_nodes[k];
+		nodes[id] = int64_t(nodes.get(id, 0)) + int64_t(cache.state.get_execution_time(k));
+	}
+	Dictionary d;
+	d["total_us"] = int64_t(total_us);
+	d["nodes"] = nodes;
+	d["operations"] = int64_t(em.operations.size());
+	return d;
+}
+
+Dictionary VoxelGeneratorGraph::_b_compile_debug() {
+	pg::CompilationResult res = compile(true);
+	Dictionary d;
+	d["success"] = res.success;
+	if (!res.success) {
+		d["message"] = res.message;
+		d["node_id"] = res.node_id;
+	}
+	return d;
+}
+
 void VoxelGeneratorGraph::_on_subresource_changed() {
 	emit_changed();
 }
@@ -2523,6 +2605,10 @@ void VoxelGeneratorGraph::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_texture_mode"), &Self::get_texture_mode);
 
 	ClassDB::bind_method(D_METHOD("compile"), &Self::_b_compile);
+	ClassDB::bind_method(D_METHOD("compile_debug"), &Self::_b_compile_debug);
+	ClassDB::bind_method(
+			D_METHOD("debug_profile_block", "origin", "lod", "size", "optimized"), &Self::_b_debug_profile_block
+	);
 
 	// ClassDB::bind_method(D_METHOD("generate_single"), &Self::_b_generate_single);
 	ClassDB::bind_method(D_METHOD("debug_analyze_range", "min_pos", "max_pos"), &Self::_b_debug_analyze_range);
