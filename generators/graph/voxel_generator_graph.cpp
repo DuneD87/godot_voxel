@@ -1408,7 +1408,49 @@ void VoxelGeneratorGraph::generate_series(
 		return;
 	}
 
-	{
+	const unsigned int count = positions_x.size();
+	const int output_index = channel == VoxelBuffer::CHANNEL_SDF ? runtime_ptr->sdf_output_index
+																  : runtime_ptr->type_output_index;
+	if (_use_optimized_execution_map && count >= 64 && output_index != -1) {
+		// Como generate_block: análisis de rangos sobre la zona de las muestras y mapa de ejecución podado que
+		// solo calcula la salida pedida. Los mapas de normales de detalle llaman aquí con lotes por celda, y
+		// sin esto evaluaban el grafo entero (pesos de texturas incluidos) en cada muestra. Los límites se
+		// calculan de las propias posiciones: los que pasa el llamante son los de la celda, y las muestras
+		// del gradiente se salen un paso.
+		Vector3f lo(positions_x[0], positions_y[0], positions_z[0]);
+		Vector3f hi = lo;
+		for (unsigned int i = 1; i < count; ++i) {
+			lo.x = math::min(lo.x, positions_x[i]);
+			lo.y = math::min(lo.y, positions_y[i]);
+			lo.z = math::min(lo.z, positions_z[i]);
+			hi.x = math::max(hi.x, positions_x[i]);
+			hi.y = math::max(hi.y, positions_y[i]);
+			hi.z = math::max(hi.z, positions_z[i]);
+		}
+		Cache &cache = get_tls_cache();
+		const pg::Runtime &runtime = runtime_ptr->runtime;
+		Span<float> in_sdf;
+		if (runtime_ptr->sdf_input_index != -1) {
+			cache.input_sdf_full_cache.resize(count);
+			in_sdf = to_span(cache.input_sdf_full_cache);
+			in_sdf.fill(0.f);
+		}
+		runtime.prepare_state(cache.state, count, false);
+		QueryInputs<math::Interval> range_inputs(
+				*runtime_ptr,
+				math::Interval(lo.x, hi.x),
+				math::Interval(lo.y, hi.y),
+				math::Interval(lo.z, hi.z),
+				math::Interval()
+		);
+		runtime.analyze_range(cache.state, range_inputs.get());
+		const unsigned int required[1] = { static_cast<unsigned int>(output_index) };
+		runtime.generate_optimized_execution_map(
+				cache.state, cache.optimized_execution_map, Span<const unsigned int>(required, 1), false
+		);
+		QueryInputs<Span<const float>> inputs(*runtime_ptr, positions_x, positions_y, positions_z, in_sdf);
+		runtime.generate_set(cache.state, inputs.get(), false, &cache.optimized_execution_map);
+	} else {
 		// The implementation cannot guarantee constness at compile time, but it should not modifiy the data either way
 		float *ptr_x = const_cast<float *>(positions_x.data());
 		float *ptr_y = const_cast<float *>(positions_y.data());
