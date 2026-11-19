@@ -6,11 +6,52 @@
 
 namespace zylann::voxel::pg {
 
-inline float get_pixel_repeat(const Image &im, int x, int y, int w, int h) {
-	return im.get_pixel(math::wrap(x, w), math::wrap(y, h)).r;
+// Lector de píxeles preparado una vez por lote. Image::get_pixel decodifica el formato y construye un
+// Color en cada llamada, y el filtro bilineal hace cuatro por muestra: para los formatos de un canal
+// más usados se lee la memoria directamente (mismo valor que get_pixel).
+struct PixelReader {
+	const Image *im;
+	const uint8_t *data = nullptr;
+	int w;
+	int h;
+	enum Kind : uint8_t { GENERIC, R8, RF } kind = GENERIC;
+
+	PixelReader(const Image &p_im) : im(&p_im), w(p_im.get_width()), h(p_im.get_height()) {
+#if defined(ZN_GODOT)
+		switch (p_im.get_format()) {
+			case Image::FORMAT_R8:
+				kind = R8;
+				data = p_im.ptr();
+				break;
+			case Image::FORMAT_RF:
+				kind = RF;
+				data = p_im.ptr();
+				break;
+			default:
+				break;
+		}
+#endif
+	}
+
+	inline float get(int x, int y) const {
+		x = math::wrap(x, w);
+		y = math::wrap(y, h);
+		switch (kind) {
+			case R8:
+				return float(data[y * w + x]) / 255.f;
+			case RF:
+				return reinterpret_cast<const float *>(data)[y * w + x];
+			default:
+				return im->get_pixel(x, y).r;
+		}
+	}
+};
+
+inline float get_pixel_repeat(const PixelReader &im, int x, int y, int w, int h) {
+	return im.get(x, y);
 }
 
-inline float get_pixel_repeat_linear(const Image &im, float x, float y, int im_w, int im_h) {
+inline float get_pixel_repeat_linear(const PixelReader &im, float x, float y, int im_w, int im_h) {
 	const int x0 = int(Math::floor(x));
 	const int y0 = int(Math::floor(y));
 
@@ -43,7 +84,7 @@ inline float sdf_sphere_heightmap(
 		float z,
 		float r,
 		float m,
-		const Image &im,
+		const PixelReader &im,
 		float min_h,
 		float max_h,
 		float norm_x,
@@ -69,7 +110,7 @@ inline float sdf_sphere_heightmap(
 	const float ys = skew3(ny);
 	const float uvy = -0.5f * ys + 0.5f;
 	// TODO Could use bicubic interpolation when the image is sampled at lower resolution than voxels
-	const float h = get_pixel_repeat_linear(im, uvx * norm_x, uvy * norm_y, im.get_width(), im.get_height());
+	const float h = get_pixel_repeat_linear(im, uvx * norm_x, uvy * norm_y, im.w, im.h);
 	return sd - m * h;
 }
 
@@ -167,10 +208,10 @@ void register_image_nodes(Span<NodeType> types) {
 			const Runtime::Buffer &y = ctx.get_input(1);
 			Runtime::Buffer &out = ctx.get_output(0);
 			const Params p = ctx.get_params<Params>();
-			const Image &im = *p.image;
+			const PixelReader im(*p.image);
 			// Cache image size to reduce API calls in GDExtension
-			const int w = im.get_width();
-			const int h = im.get_height();
+			const int w = im.w;
+			const int h = im.h;
 #ifdef DEBUG_ENABLED
 			if (w == 0 || h == 0) {
 				ZN_PRINT_ERROR_ONCE("Image is empty");
@@ -258,7 +299,7 @@ void register_image_nodes(Span<NodeType> types) {
 			Runtime::Buffer &out = ctx.get_output(0);
 			// TODO Allow to use bilinear filtering?
 			const Params p = ctx.get_params<Params>();
-			const Image &im = *p.image;
+			const PixelReader im(*p.image);
 			for (uint32_t i = 0; i < out.size; ++i) {
 				out.data[i] = sdf_sphere_heightmap(
 						x.data[i],
