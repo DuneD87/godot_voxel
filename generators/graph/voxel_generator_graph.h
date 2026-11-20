@@ -100,6 +100,8 @@ public:
 	// Utility
 
 	void bake_sphere_bumpmap(Ref<Image> im, float ref_radius, float min_height, float max_height);
+	void bake_sphere_heightmap(Ref<Image> im, float ref_radius, float min_height, float max_height);
+	void bake_sphere(Ref<Image> im, float ref_radius, float min_height, float max_height, bool heightmap_mapping);
 	void bake_sphere_normalmap(Ref<Image> im, float ref_radius, float strength);
 
 	float raycast_sdf_approx(const Vector3 ray_origin, const Vector3 ray_end, const float stride) const;

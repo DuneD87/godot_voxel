@@ -1,4 +1,5 @@
 #include "voxel_generator_graph.h"
+#include <cmath>
 #include "../../constants/voxel_string_names.h"
 #include "../../storage/mixel4.h"
 #include "../../storage/voxel_buffer.h"
@@ -1530,7 +1531,36 @@ inline void for_chunks_2d(int w, int h, int chunk_size, F &f) {
 	}
 }
 
+// Posición en la esfera unidad del píxel (uv) con la MISMA convención con la que lee SdfSphereHeightmap:
+// fila 0 en el polo norte (+Y) y latitud por la aproximación skew3(ny) = (ny^3 + ny) / 2.
+inline Vector3 get_3d_pos_from_sphere_heightmap_uv(Vector2 uv) {
+	// uvy = -0.5 * skew3(ny) + 0.5  =>  ny^3 + ny = 2 * ys, con ys = (0.5 - uvy) * 2. Cardano (una raíz real).
+	const double ys = (0.5 - uv.y) * 2.0;
+	const double d = Math::sqrt(ys * ys + 1.0 / 27.0);
+	const double ny = std::cbrt(ys + d) + std::cbrt(ys - d);
+	const double nxz = Math::sqrt(math::max(0.0, 1.0 - ny * ny));
+	// uvx = -atan2(nz, nx) / TAU + 0.5
+	const double a = (0.5 - uv.x) * math::TAU<double>;
+	return Vector3(Math::cos(a) * nxz, ny, Math::sin(a) * nxz);
+}
+
 void VoxelGeneratorGraph::bake_sphere_bumpmap(Ref<Image> im, float ref_radius, float sdf_min, float sdf_max) {
+	bake_sphere(im, ref_radius, sdf_min, sdf_max, false);
+}
+
+// Como bake_sphere_bumpmap, pero con la convención de SdfSphereHeightmap: la imagen resultante se puede
+// enchufar a ese nodo y devuelve el mismo relieve en las mismas direcciones.
+void VoxelGeneratorGraph::bake_sphere_heightmap(Ref<Image> im, float ref_radius, float sdf_min, float sdf_max) {
+	bake_sphere(im, ref_radius, sdf_min, sdf_max, true);
+}
+
+void VoxelGeneratorGraph::bake_sphere(
+		Ref<Image> im,
+		float ref_radius,
+		float sdf_min,
+		float sdf_max,
+		bool heightmap_mapping
+) {
 	ERR_FAIL_COND(im.is_null());
 
 	std::shared_ptr<const Runtime> runtime_ptr;
@@ -1555,6 +1585,7 @@ void VoxelGeneratorGraph::bake_sphere_bumpmap(Ref<Image> im, float ref_radius, f
 		const float ref_radius;
 		const float sdf_min;
 		const float sdf_max;
+		const bool heightmap_mapping;
 
 		ProcessChunk(
 				pg::Runtime::State &p_state,
@@ -1562,14 +1593,16 @@ void VoxelGeneratorGraph::bake_sphere_bumpmap(Ref<Image> im, float ref_radius, f
 				float p_ref_radius,
 				float p_sdf_min,
 				float p_sdf_max,
-				Image &p_im
+				Image &p_im,
+				bool p_heightmap_mapping
 		) :
 				im(p_im),
 				runtime_wrapper(p_runtime),
 				state(p_state),
 				ref_radius(p_ref_radius),
 				sdf_min(p_sdf_min),
-				sdf_max(p_sdf_max) {}
+				sdf_max(p_sdf_max),
+				heightmap_mapping(p_heightmap_mapping) {}
 
 		void operator()(int x0, int y0, int width, int height) {
 			ZN_PROFILE_SCOPE();
@@ -1592,7 +1625,9 @@ void VoxelGeneratorGraph::bake_sphere_bumpmap(Ref<Image> im, float ref_radius, f
 			for (int iy = y0; iy < ymax; ++iy) {
 				for (int ix = x0; ix < xmax; ++ix) {
 					const Vector2 uv = suv * Vector2(ix, iy);
-					const Vector3 p = get_3d_pos_from_panorama_uv(uv) * ref_radius;
+					const Vector3 p = (heightmap_mapping ? get_3d_pos_from_sphere_heightmap_uv(uv)
+														 : get_3d_pos_from_panorama_uv(uv)) *
+							ref_radius;
 					x_coords[i] = p.x;
 					y_coords[i] = p.y;
 					z_coords[i] = p.z;
@@ -1631,7 +1666,7 @@ void VoxelGeneratorGraph::bake_sphere_bumpmap(Ref<Image> im, float ref_radius, f
 
 	Cache &cache = get_tls_cache();
 
-	ProcessChunk pc(cache.state, *runtime_ptr, ref_radius, sdf_min, sdf_max, **im);
+	ProcessChunk pc(cache.state, *runtime_ptr, ref_radius, sdf_min, sdf_max, **im, heightmap_mapping);
 	for_chunks_2d(im->get_width(), im->get_height(), 32, pc);
 }
 
@@ -2657,6 +2692,10 @@ void VoxelGeneratorGraph::_bind_methods() {
 
 	ClassDB::bind_method(
 			D_METHOD("bake_sphere_bumpmap", "im", "ref_radius", "sdf_min", "sdf_max"), &Self::bake_sphere_bumpmap
+	);
+	ClassDB::bind_method(
+			D_METHOD("bake_sphere_heightmap", "im", "ref_radius", "sdf_min", "sdf_max"),
+			&Self::bake_sphere_heightmap
 	);
 	ClassDB::bind_method(
 			D_METHOD("bake_sphere_normalmap", "im", "ref_radius", "strength"), &Self::bake_sphere_normalmap
