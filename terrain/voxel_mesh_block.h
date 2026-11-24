@@ -81,22 +81,8 @@ public:
 	void set_collision_enabled(bool enable);
 	bool is_collision_enabled() const;
 
-	inline Vector3i get_position_in_voxels() const {
-		return _position_in_voxels;
-	}
-
-	inline bool is_horizon_culled() const {
-		return _horizon_culled;
-	}
-
 protected:
 	void _set_visible(bool visible);
-
-	// Whether the block's instances are in the world: shown by the terrain, its node visible, and not hidden behind
-	// the planet's horizon (see VoxelLodTerrain horizon culling).
-	inline bool _is_shown() const {
-		return _visible && _parent_visible && !_horizon_culled;
-	}
 
 	inline void set_mesh_instance_visible(zylann::godot::DirectMeshInstance &mi, bool visible) {
 		if (visible) {
@@ -119,7 +105,6 @@ protected:
 	StdVector<Ref<Shape3D>> _collision_pieces;
 
 	bool _parent_visible = true;
-	bool _horizon_culled = false;
 };
 
 // Splits a concave shape into up to 8 shapes by octant of its triangles' centers, to build them over several

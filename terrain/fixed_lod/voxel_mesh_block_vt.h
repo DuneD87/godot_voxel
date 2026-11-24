@@ -41,7 +41,7 @@ public:
 
 			// To update world. I replaced visibility by presence in world because Godot 3 culling performance is
 			// horrible
-			_set_visible(_is_shown());
+			_set_visible(_visible && _parent_visible);
 
 			if (_static_body.is_valid()) {
 				_static_body.set_world(*p_world);
@@ -82,7 +82,7 @@ public:
 #else
 				shadow_occluder.set_cast_shadows_setting(RenderingServer::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
 #endif
-				set_mesh_instance_visible(shadow_occluder, _is_shown());
+				set_mesh_instance_visible(shadow_occluder, _visible && _parent_visible);
 			}
 			shadow_occluder.set_mesh(shadow_occluder_mesh);
 		}
@@ -109,7 +109,7 @@ public:
 			return;
 		}
 		_visible = visible;
-		_set_visible(_is_shown());
+		_set_visible(_visible && _parent_visible);
 	}
 
 	void set_parent_visible(bool parent_visible) {
@@ -117,7 +117,7 @@ public:
 			return;
 		}
 		_parent_visible = parent_visible;
-		_set_visible(_is_shown());
+		_set_visible(_visible && _parent_visible);
 	}
 
 	void set_parent_transform(const Transform3D &parent_transform) {

@@ -104,15 +104,6 @@ public:
 	void set_shadow_casting_max_lod(int max_lod_index);
 	int get_shadow_casting_max_lod() const;
 
-	// Planet horizon culling. The terrain is assumed to be a planet centered on its local origin, solid at least
-	// up to `horizon_occluder_radius` (local units) everywhere. Mesh blocks whose mesh lies entirely behind that
-	// sphere, as seen from the viewport's active camera, are taken out of the world (no draw, no shadow).
-	// Frustum culling can't do this: far LODs on the other side of the planet are often inside the frustum.
-	void set_horizon_culling_enabled(bool enabled);
-	bool is_horizon_culling_enabled() const;
-	void set_horizon_occluder_radius(float radius);
-	float get_horizon_occluder_radius() const;
-
 	void set_threaded_update_enabled(bool enabled);
 	bool is_threaded_update_enabled() const;
 
@@ -237,12 +228,6 @@ public:
 		uint64_t total_unloaded_blocks = 0;
 		uint64_t total_block_remove_usec = 0;
 		uint64_t total_instancer_exit_usec = 0;
-		// Horizon culling in the last frame: blocks with a mesh that were tested, and those hidden.
-		uint32_t horizon_tested_blocks = 0;
-		uint32_t horizon_culled_blocks = 0;
-		// Why the last frame did not cull: "" when it did, otherwise a short tag.
-		const char *horizon_skip_reason = "";
-		uint64_t total_horizon_culling_usec = 0;
 	};
 
 	const Stats &get_stats() const;
@@ -390,8 +375,6 @@ private:
 
 	void process_deferred_collision_updates(uint32_t budget_usec);
 	void process_fading_blocks(float delta);
-	void process_horizon_culling();
-	void clear_horizon_culling(const char *reason);
 
 	struct LocalCameraInfo {
 		Vector3 position;
@@ -489,10 +472,6 @@ private:
 	// Data stored with a shared pointer so it can be sent to asynchronous tasks
 	bool _threaded_update_enabled = false;
 	uint8_t _shadow_casting_max_lod = constants::MAX_LOD;
-	bool _horizon_culling_enabled = false;
-	// True while some blocks may still be flagged as culled.
-	bool _horizon_culling_applied = false;
-	float _horizon_occluder_radius = 0.f;
 	RenderingServer::ShadowCastingSetting get_shadow_casting_for_lod(unsigned int lod_index) const;
 	std::shared_ptr<VoxelData> _data;
 	std::shared_ptr<VoxelLodTerrainUpdateData> _update_data;

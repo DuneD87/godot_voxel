@@ -25,7 +25,7 @@ void VoxelMeshBlock::set_world(Ref<World3D> p_world) {
 		_world = p_world;
 
 		// To update world. I replaced visibility by presence in world because Godot 3 culling performance is horrible
-		_set_visible(_is_shown());
+		_set_visible(_visible && _parent_visible);
 
 		if (_static_body.is_valid()) {
 			_static_body.set_world(*p_world);
@@ -70,7 +70,7 @@ void VoxelMeshBlock::set_mesh(
 			_mesh_instance.set_gi_mode(gi_mode);
 			_mesh_instance.set_cast_shadows_setting(shadow_setting);
 			_mesh_instance.set_render_layers_mask(render_layers_mask);
-			set_mesh_instance_visible(_mesh_instance, _is_shown());
+			set_mesh_instance_visible(_mesh_instance, _visible && _parent_visible);
 		}
 
 		_mesh_instance.set_mesh(mesh);
@@ -109,7 +109,7 @@ void VoxelMeshBlock::set_visible(bool visible) {
 		return;
 	}
 	_visible = visible;
-	_set_visible(_is_shown());
+	_set_visible(_visible && _parent_visible);
 }
 
 bool VoxelMeshBlock::is_visible() const {
@@ -127,7 +127,7 @@ void VoxelMeshBlock::set_parent_visible(bool parent_visible) {
 		return;
 	}
 	_parent_visible = parent_visible;
-	_set_visible(_is_shown());
+	_set_visible(_visible && _parent_visible);
 }
 
 void VoxelMeshBlock::set_parent_transform(const Transform3D &parent_transform) {
