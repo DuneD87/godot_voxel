@@ -83,7 +83,7 @@ void VoxelMeshBlockVLT::set_mesh(
 #endif
 			// TODO Should we hide it if shadow casting is off?
 			// TBH it would be even better for the user to simply turn these off in the mesher...
-			set_mesh_instance_visible(_shadow_occluder, _visible && _parent_visible);
+			set_mesh_instance_visible(_shadow_occluder, _is_shown());
 		}
 		_shadow_occluder.set_mesh(shadow_occluder_mesh);
 	}
@@ -96,7 +96,7 @@ void VoxelMeshBlockVLT::set_mesh(
 			_mesh_instance.set_gi_mode(gi_mode);
 			_mesh_instance.set_cast_shadows_setting(shadow_casting);
 			_mesh_instance.set_render_layers_mask(render_layers_mask);
-			set_mesh_instance_visible(_mesh_instance, _visible && _parent_visible);
+			set_mesh_instance_visible(_mesh_instance, _is_shown());
 		}
 
 		_mesh_instance.set_mesh(mesh);
@@ -198,7 +198,7 @@ void VoxelMeshBlockVLT::set_transition_mesh(
 			mesh_instance.set_gi_mode(gi_mode);
 			mesh_instance.set_cast_shadows_setting(shadow_casting);
 			mesh_instance.set_render_layers_mask(render_layers_mask);
-			set_mesh_instance_visible(mesh_instance, _visible && _parent_visible && _is_transition_visible(side));
+			set_mesh_instance_visible(mesh_instance, _is_shown() && _is_transition_visible(side));
 		}
 
 		mesh_instance.set_mesh(mesh);
@@ -223,7 +223,7 @@ void VoxelMeshBlockVLT::set_world(Ref<World3D> p_world) {
 		_world = p_world;
 
 		// To update world. I replaced visibility by presence in world because Godot 3 culling performance is horrible
-		_set_visible(_visible && _parent_visible);
+		_set_visible(_is_shown());
 
 		if (_static_body.is_valid()) {
 			_static_body.set_world(*p_world);
@@ -236,7 +236,7 @@ void VoxelMeshBlockVLT::set_visible(bool visible) {
 		return;
 	}
 	_visible = visible;
-	_set_visible(_visible && _parent_visible);
+	_set_visible(_is_shown());
 }
 
 void VoxelMeshBlockVLT::_set_visible(bool visible) {
@@ -329,7 +329,7 @@ void VoxelMeshBlockVLT::set_transition_mask(uint8_t m) {
 	for (int dir = 0; dir < Cube::SIDE_COUNT; ++dir) {
 		DirectMeshInstance &mi = _transition_mesh_instances[dir];
 		if (mi.is_valid() && (diff & (1 << dir))) {
-			set_mesh_instance_visible(mi, _visible && _parent_visible && _is_transition_visible(dir));
+			set_mesh_instance_visible(mi, _is_shown() && _is_transition_visible(dir));
 		}
 	}
 }
@@ -339,7 +339,15 @@ void VoxelMeshBlockVLT::set_parent_visible(bool parent_visible) {
 		return;
 	}
 	_parent_visible = parent_visible;
-	_set_visible(_visible && _parent_visible);
+	_set_visible(_is_shown());
+}
+
+void VoxelMeshBlockVLT::set_horizon_culled(bool culled) {
+	if (_horizon_culled == culled) {
+		return;
+	}
+	_horizon_culled = culled;
+	_set_visible(_is_shown());
 }
 
 void VoxelMeshBlockVLT::set_parent_transform(const Transform3D &parent_transform) {

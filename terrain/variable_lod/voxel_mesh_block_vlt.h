@@ -57,6 +57,8 @@ public:
 	void clear_fading();
 
 	void set_parent_visible(bool parent_visible);
+	// Hides the block while it is behind the planet's horizon, without touching its LOD visibility state.
+	void set_horizon_culled(bool culled);
 
 	void set_mesh(
 			Ref<Mesh> mesh,

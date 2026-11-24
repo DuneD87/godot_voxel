@@ -402,6 +402,120 @@ int VoxelLodTerrain::get_shadow_casting_max_lod() const {
 	return _shadow_casting_max_lod;
 }
 
+void VoxelLodTerrain::set_horizon_culling_enabled(bool enabled) {
+	_horizon_culling_enabled = enabled;
+	if (!enabled) {
+		clear_horizon_culling("disabled");
+	}
+}
+
+bool VoxelLodTerrain::is_horizon_culling_enabled() const {
+	return _horizon_culling_enabled;
+}
+
+void VoxelLodTerrain::set_horizon_occluder_radius(float radius) {
+	_horizon_occluder_radius = math::max(radius, 0.f);
+}
+
+float VoxelLodTerrain::get_horizon_occluder_radius() const {
+	return _horizon_occluder_radius;
+}
+
+void VoxelLodTerrain::clear_horizon_culling(const char *reason) {
+	_stats.horizon_skip_reason = reason;
+	if (!_horizon_culling_applied) {
+		return;
+	}
+	for (unsigned int lod_index = 0; lod_index < _update_data->state.lods.size(); ++lod_index) {
+		_mesh_maps_per_lod[lod_index].for_each_block([](VoxelMeshBlockVLT &block) { //
+			block.set_horizon_culled(false);
+		});
+	}
+	_horizon_culling_applied = false;
+	_stats.horizon_culled_blocks = 0;
+	_stats.horizon_tested_blocks = 0;
+}
+
+// Horizon culling test (as in Cesium's EllipsoidalOccluder, for a sphere): in space scaled so the occluder is a
+// unit sphere, a point is hidden if it lies inside the cone from the camera tangent to the sphere, beyond the
+// plane of the tangent circle. That region is convex, so a box is hidden when its 8 corners are.
+void VoxelLodTerrain::process_horizon_culling() {
+	ZN_PROFILE_SCOPE();
+
+	if (!_horizon_culling_enabled) {
+		clear_horizon_culling("disabled");
+		return;
+	}
+	if (_horizon_occluder_radius <= 0.f) {
+		clear_horizon_culling("no_radius");
+		return;
+	}
+	if (Engine::get_singleton()->is_editor_hint()) {
+		clear_horizon_culling("editor");
+		return;
+	}
+	const Viewport *viewport = is_inside_tree() ? get_viewport() : nullptr;
+	const Camera3D *camera = viewport != nullptr ? viewport->get_camera_3d() : nullptr;
+	if (camera == nullptr) {
+		clear_horizon_culling("no_camera");
+		return;
+	}
+
+	ScopedUsecCounter timer(_stats.total_horizon_culling_usec);
+
+	const Transform3D world_to_local = get_global_transform().affine_inverse();
+	const real_t inv_radius = 1.0 / _horizon_occluder_radius;
+	// Camera to occluder center, in unit-sphere space. The center is the terrain's origin.
+	const Vector3 vc = -world_to_local.xform(camera->get_global_transform().origin) * inv_radius;
+	const real_t vh2 = vc.length_squared() - 1.0;
+
+	if (vh2 <= 0.0) {
+		// Camera below the occluder radius (deep cave, sea floor): the sphere tells nothing.
+		clear_horizon_culling("camera_inside");
+		return;
+	}
+
+	uint32_t tested = 0;
+	uint32_t culled = 0;
+
+	for (unsigned int lod_index = 0; lod_index < _update_data->state.lods.size(); ++lod_index) {
+		// Transition meshes sit on the block's faces, which the main mesh may not reach exactly.
+		const real_t margin = static_cast<real_t>(1 << lod_index);
+
+		_mesh_maps_per_lod[lod_index].for_each_block([&](VoxelMeshBlockVLT &block) {
+			const Ref<Mesh> mesh = block.get_mesh();
+			if (mesh.is_null()) {
+				block.set_horizon_culled(false);
+				return;
+			}
+			++tested;
+			const AABB box = mesh->get_aabb().grow(margin);
+			// Corners relative to the camera (vt = corner - camera = corner + vc in unit space).
+			const Vector3 base = Vector3(block.get_position_in_voxels()) + box.position;
+			bool hidden = true;
+			for (unsigned int i = 0; i < 8 && hidden; ++i) {
+				const Vector3 corner(
+						base.x + ((i & 1) ? box.size.x : 0),
+						base.y + ((i & 2) ? box.size.y : 0),
+						base.z + ((i & 4) ? box.size.z : 0)
+				);
+				const Vector3 vt = corner * inv_radius + vc;
+				const real_t vt_dot_vc = vt.dot(vc);
+				hidden = vt_dot_vc > vh2 && vt_dot_vc * vt_dot_vc > vh2 * vt.length_squared();
+			}
+			block.set_horizon_culled(hidden);
+			if (hidden) {
+				++culled;
+			}
+		});
+	}
+
+	_horizon_culling_applied = true;
+	_stats.horizon_skip_reason = "";
+	_stats.horizon_tested_blocks = tested;
+	_stats.horizon_culled_blocks = culled;
+}
+
 void VoxelLodTerrain::_on_render_layers_mask_changed() {
 	const int mask = get_render_layers_mask();
 	for (unsigned int lod_index = 0; lod_index < _update_data->state.lods.size(); ++lod_index) {
@@ -1355,6 +1469,8 @@ void VoxelLodTerrain::process(float delta) {
 
 	// Do it after we change mesh block states so materials are updated
 	process_fading_blocks(delta);
+
+	process_horizon_culling();
 }
 
 void VoxelLodTerrain::apply_main_thread_update_tasks() {
@@ -2783,6 +2899,10 @@ Dictionary VoxelLodTerrain::_b_get_statistics() const {
 	d["total_unloaded_blocks"] = static_cast<int64_t>(_stats.total_unloaded_blocks);
 	d["total_block_remove_usec"] = static_cast<int64_t>(_stats.total_block_remove_usec);
 	d["total_instancer_exit_usec"] = static_cast<int64_t>(_stats.total_instancer_exit_usec);
+	d["horizon_tested_blocks"] = _stats.horizon_tested_blocks;
+	d["horizon_culled_blocks"] = _stats.horizon_culled_blocks;
+	d["horizon_skip_reason"] = String(_stats.horizon_skip_reason);
+	d["total_horizon_culling_usec"] = static_cast<int64_t>(_stats.total_horizon_culling_usec);
 
 	return d;
 }
@@ -4101,6 +4221,10 @@ void VoxelLodTerrain::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_shadow_casting_max_lod", "max_lod_index"), &Self::set_shadow_casting_max_lod);
 	ClassDB::bind_method(D_METHOD("get_shadow_casting_max_lod"), &Self::get_shadow_casting_max_lod);
+	ClassDB::bind_method(D_METHOD("set_horizon_culling_enabled", "enabled"), &Self::set_horizon_culling_enabled);
+	ClassDB::bind_method(D_METHOD("is_horizon_culling_enabled"), &Self::is_horizon_culling_enabled);
+	ClassDB::bind_method(D_METHOD("set_horizon_occluder_radius", "radius"), &Self::set_horizon_occluder_radius);
+	ClassDB::bind_method(D_METHOD("get_horizon_occluder_radius"), &Self::get_horizon_occluder_radius);
 	ClassDB::bind_method(D_METHOD("set_threaded_update_enabled", "enabled"), &Self::set_threaded_update_enabled);
 	ClassDB::bind_method(D_METHOD("is_threaded_update_enabled"), &Self::is_threaded_update_enabled);
 
@@ -4287,6 +4411,16 @@ void VoxelLodTerrain::_bind_methods() {
 			PropertyInfo(Variant::INT, "shadow_casting_max_lod", PROPERTY_HINT_RANGE, "0,32,1"),
 			"set_shadow_casting_max_lod",
 			"get_shadow_casting_max_lod"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::BOOL, "horizon_culling_enabled"),
+			"set_horizon_culling_enabled",
+			"is_horizon_culling_enabled"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::FLOAT, "horizon_occluder_radius", PROPERTY_HINT_RANGE, "0,1000000,1,or_greater"),
+			"set_horizon_occluder_radius",
+			"get_horizon_occluder_radius"
 	);
 	ADD_PROPERTY(
 			PropertyInfo(Variant::BOOL, "threaded_update_enabled"),

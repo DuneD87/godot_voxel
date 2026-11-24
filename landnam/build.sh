@@ -39,6 +39,7 @@ done
 ln -sfn "$MODULE_DIR" modules/voxel
 
 for target in "${TARGETS[@]}"; do
+	# production=yes (LTO): sin ella el binario rendía ~20 fps menos que el oficial (medido 2026-11-18, RTX 4080).
 	# shellcheck disable=SC2086
 	nice -n 10 scons platform=linuxbsd target="$target" production=yes tests=no dev_build=no \
 		debug_symbols=no -j"$JOBS" ${EXTRA_SCONS:-}
