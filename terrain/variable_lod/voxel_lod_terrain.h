@@ -59,6 +59,9 @@ public:
 	void set_secondary_lod_distance(float p_lod_distance);
 	float get_secondary_lod_distance() const;
 
+	void set_lod_hysteresis(float p_ratio);
+	float get_lod_hysteresis() const;
+
 	void set_lod_count(int p_lod_count);
 	int get_lod_count() const;
 

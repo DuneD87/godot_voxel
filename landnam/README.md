@@ -11,6 +11,8 @@ Resumen:
   instancer (`block_exit_budget_microseconds`). Por defecto todo se comporta como el original.
 - `VoxelInstancer.get_instance_transforms_in_sphere()`, `get_instances_revision()`, `get_statistics()`;
   `VoxelLodTerrain.shadow_casting_max_lod` y contadores acumulados en `get_statistics()`.
+- `VoxelLodTerrain.lod_hysteresis` (streaming por cajas): ir y volver sobre el borde de un bloque ya no
+  descarga y vuelve a mallar una franja de bloques cada vez. Por defecto 0, como el original.
 
 `patches/godot/` lleva lo que hace falta cambiar en el propio Godot (hoy, que Jolt construya también las
 formas desactivadas al añadirlas). `build.sh` clona Godot si no está, aplica los parches, enlaza este

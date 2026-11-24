@@ -851,6 +851,19 @@ float VoxelLodTerrain::get_secondary_lod_distance() const {
 	return _update_data->settings.secondary_lod_distance;
 }
 
+void VoxelLodTerrain::set_lod_hysteresis(float p_ratio) {
+	const float ratio = math::clamp(p_ratio, 0.f, 1.f);
+	if (ratio == _update_data->settings.lod_hysteresis) {
+		return;
+	}
+	_update_data->wait_for_end_of_task();
+	_update_data->settings.lod_hysteresis = ratio;
+}
+
+float VoxelLodTerrain::get_lod_hysteresis() const {
+	return _update_data->settings.lod_hysteresis;
+}
+
 void VoxelLodTerrain::get_lod_distances(Span<float> distances) {
 	// Get the distances in local coordinates where each LOD ends (not accounting for max view distance extension).
 	// Note that due to chunking adjustments, this may not be fully accurate. Actual chunks can appear further away.
@@ -4008,6 +4021,8 @@ void VoxelLodTerrain::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_secondary_lod_distance", "lod_distance"), &Self::set_secondary_lod_distance);
 	ClassDB::bind_method(D_METHOD("get_secondary_lod_distance"), &Self::get_secondary_lod_distance);
+	ClassDB::bind_method(D_METHOD("set_lod_hysteresis", "ratio"), &Self::set_lod_hysteresis);
+	ClassDB::bind_method(D_METHOD("get_lod_hysteresis"), &Self::get_lod_hysteresis);
 
 	// Misc
 
@@ -4160,6 +4175,11 @@ void VoxelLodTerrain::_bind_methods() {
 			PropertyInfo(Variant::FLOAT, "secondary_lod_distance"),
 			"set_secondary_lod_distance",
 			"get_secondary_lod_distance"
+	);
+	ADD_PROPERTY(
+			PropertyInfo(Variant::FLOAT, "lod_hysteresis", PROPERTY_HINT_RANGE, "0,1,0.05"),
+			"set_lod_hysteresis",
+			"get_lod_hysteresis"
 	);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lod_fade_duration"), "set_lod_fade_duration", "get_lod_fade_duration");
 

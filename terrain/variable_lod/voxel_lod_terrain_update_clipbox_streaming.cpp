@@ -79,6 +79,36 @@ Box3i get_base_box_in_chunks(
 	return Box3i::from_min_max(minp, maxp);
 }
 
+// The base box of a LOD (get_base_box_in_chunks) with hysteresis: along each axis where `box` moved away from
+// `prev_box`, the previous position is kept unless the viewer is more than `margin_voxels` past the boundary
+// that moved it. Coming back needs the same margin the other way.
+Box3i apply_box_hysteresis(
+		Box3i box,
+		const Box3i &prev_box,
+		Vector3i viewer_position_voxels,
+		Vector3i distance_voxels,
+		int chunk_size,
+		bool make_even,
+		int margin_voxels
+) {
+	if (margin_voxels <= 0 || prev_box.size != box.size || prev_box.position == box.position) {
+		return box;
+	}
+	for (unsigned int axis = 0; axis < 3; ++axis) {
+		if (box.position[axis] == prev_box.position[axis]) {
+			continue;
+		}
+		// Where the box would be with the viewer `margin` back towards where the box was.
+		Vector3i held_position = viewer_position_voxels;
+		held_position[axis] += prev_box.position[axis] > box.position[axis] ? margin_voxels : -margin_voxels;
+		const Box3i held = get_base_box_in_chunks(held_position, distance_voxels, chunk_size, make_even);
+		if (held.position[axis] == prev_box.position[axis]) {
+			box.position[axis] = prev_box.position[axis];
+		}
+	}
+	return box;
+}
+
 // Gets the smallest box a parent LOD must have in order to keep respecting the neighboring rule
 Box3i get_minimal_box_for_parent_lod(Box3i child_lod_box, bool make_even) {
 	const int min_pad = 1;
@@ -293,6 +323,17 @@ void process_viewers(
 						lod_mesh_block_size,
 						even_coordinates_required
 				);
+
+				new_mesh_box = apply_box_hysteresis(
+						new_mesh_box,
+						paired_viewer.prev_state.base_mesh_box_per_lod[lod_index],
+						paired_viewer.state.local_position_voxels,
+						ld * lod_mesh_block_size,
+						lod_mesh_block_size,
+						even_coordinates_required,
+						static_cast<int>(volume_settings.lod_hysteresis * static_cast<float>(lod_mesh_block_size))
+				);
+				paired_viewer.state.base_mesh_box_per_lod[lod_index] = new_mesh_box;
 
 				if (lod_index > 0) {
 					const Box3i &child_box = paired_viewer.state.mesh_box_per_lod[lod_index - 1];

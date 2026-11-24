@@ -68,6 +68,10 @@ struct VoxelLodTerrainUpdateData {
 		float lod_distance = 0.f;
 		// Distance between the end of LOD0 and the end of LOD1, carried over to other LODs
 		float secondary_lod_distance = 0.f;
+		// How far past a chunk boundary a viewer must go (as a ratio of each LOD's mesh chunk size) before the
+		// clipbox of that LOD moves, and the same to move it back: walking back and forth over a boundary does not
+		// unload and reload a slab of chunks every time. 0 = none (boxes follow the viewer exactly).
+		float lod_hysteresis = 0.f;
 		unsigned int view_distance_voxels = 512;
 		StreamingSystem streaming_system = STREAMING_SYSTEM_LEGACY_OCTREE;
 		// bool full_load_mode = false;
@@ -273,6 +277,9 @@ struct VoxelLodTerrainUpdateData {
 			// In block coordinates
 			FixedArray<Box3i, constants::MAX_LOD> data_box_per_lod;
 			FixedArray<Box3i, constants::MAX_LOD> mesh_box_per_lod;
+			// Mesh boxes as placed around the viewer, before the neighboring rule and clipping: what hysteresis
+			// compares with (Settings::lod_hysteresis).
+			FixedArray<Box3i, constants::MAX_LOD> base_mesh_box_per_lod;
 
 			Distances view_distance_voxels;
 			bool requires_collisions = false;
